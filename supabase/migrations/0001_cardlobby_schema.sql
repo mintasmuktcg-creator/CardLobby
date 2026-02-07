@@ -38,7 +38,7 @@ create table if not exists public.cards (
   search_vector tsvector generated always as (
     setweight(to_tsvector('simple', coalesce(name, '')), 'A') ||
     setweight(to_tsvector('simple', coalesce(rarity, '')), 'B') ||
-    setweight(to_tsvector('simple', coalesce(slug, '')), 'C')
+    setweight(to_tsvector('simple', coalesce(lower(regexp_replace(name, '\s+', '-', 'g')), '')), 'C')
   ) stored,
   created_at timestamptz not null default now(),
   unique (set_id, number),
@@ -94,20 +94,40 @@ alter table public.card_sets enable row level security;
 alter table public.cards enable row level security;
 alter table public.price_history enable row level security;
 alter table public.user_collections enable row level security;
-alter table if exists storage.objects enable row level security;
+
+-- storage.objects is owned by the storage schema; in hosted Supabase RLS is already enabled.
+-- Attempt to enable, but skip if lacking ownership to avoid migration failure.
+do $$
+begin
+  begin
+    alter table storage.objects enable row level security;
+  exception
+    when insufficient_privilege then
+      raise notice 'Skipped enabling RLS on storage.objects (not owner); likely already enforced by Supabase.';
+  end;
+end;
+$$;
 
 -- Open reads for catalog and pricing
-create policy if not exists "Public read categories" on public.categories
+drop policy if exists "Public read categories" on public.categories;
+create policy "Public read categories" on public.categories
   for select using (true);
-create policy if not exists "Public read sets" on public.card_sets
+
+drop policy if exists "Public read sets" on public.card_sets;
+create policy "Public read sets" on public.card_sets
   for select using (true);
-create policy if not exists "Public read cards" on public.cards
+
+drop policy if exists "Public read cards" on public.cards;
+create policy "Public read cards" on public.cards
   for select using (true);
-create policy if not exists "Public read prices" on public.price_history
+
+drop policy if exists "Public read prices" on public.price_history;
+create policy "Public read prices" on public.price_history
   for select using (true);
 
 -- Collections: owner-only access
-create policy if not exists "Users manage their collections" on public.user_collections
+drop policy if exists "Users manage their collections" on public.user_collections;
+create policy "Users manage their collections" on public.user_collections
   for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
 
 insert into storage.buckets (id, name, public, file_size_limit)
@@ -115,15 +135,19 @@ values ('card-images', 'card-images', false, 5242880)
 on conflict (id) do nothing;
 
 -- Storage policies
-create policy if not exists "Anyone can view card images" on storage.objects
+drop policy if exists "Anyone can view card images" on storage.objects;
+create policy "Anyone can view card images" on storage.objects
   for select using (bucket_id = 'card-images');
 
-create policy if not exists "Authenticated can upload card images" on storage.objects
+drop policy if exists "Authenticated can upload card images" on storage.objects;
+create policy "Authenticated can upload card images" on storage.objects
   for insert with check (bucket_id = 'card-images' and auth.role() = 'authenticated');
 
-create policy if not exists "Owners can update card images" on storage.objects
+drop policy if exists "Owners can update card images" on storage.objects;
+create policy "Owners can update card images" on storage.objects
   for update using (bucket_id = 'card-images' and owner = auth.uid())
   with check (bucket_id = 'card-images' and owner = auth.uid());
 
-create policy if not exists "Owners can delete card images" on storage.objects
+drop policy if exists "Owners can delete card images" on storage.objects;
+create policy "Owners can delete card images" on storage.objects
   for delete using (bucket_id = 'card-images' and owner = auth.uid());
