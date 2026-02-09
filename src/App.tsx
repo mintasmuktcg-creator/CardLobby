@@ -833,6 +833,7 @@ function AdminPortal() {
   const [categoryName, setCategoryName] = useState('Pokémon TCG')
   const [setName, setSetName] = useState('Mega Evolution — Ascended Heroes')
   const [setCode, setSetCode] = useState('MEA')
+  const [replaceCards, setReplaceCards] = useState(false)
 
   const handleUpload = () => {
     if (!file) return
@@ -876,6 +877,15 @@ function AdminPortal() {
             .single()
           if (setError) throw setError
           const setId = setData.id
+
+          if (replaceCards) {
+            setStatus({ state: 'uploading', progress: 'Clearing existing cards' })
+            const { error: deleteErr } = await supabase
+              .from('cards')
+              .delete()
+              .eq('set_id', setId)
+            if (deleteErr) throw deleteErr
+          }
 
           // De-dupe products by tcg_product_id to avoid ON CONFLICT hitting the same row twice
           const productMap = new Map<number, Record<string, unknown>>()
@@ -1067,6 +1077,14 @@ function AdminPortal() {
             onChange={(e) => setSetCode(e.target.value)}
             placeholder="Set code"
           />
+          <label className="toggle">
+            <input
+              type="checkbox"
+              checked={replaceCards}
+              onChange={(e) => setReplaceCards(e.target.checked)}
+            />
+            Replace cards in set
+          </label>
           <input
             type="file"
             accept=".csv,text/csv"

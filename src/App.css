@@ -406,6 +406,22 @@
   min-width: 180px;
 }
 
+.toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.06);
+  color: #f2ecff;
+  font-size: 14px;
+}
+
+.toggle input {
+  accent-color: #b8f000;
+}
+
 .admin-status {
   font-size: 14px;
   color: var(--text-muted);
