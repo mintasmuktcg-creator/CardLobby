@@ -14,20 +14,12 @@ type CardSetDbRow = {
   generation?: number | null
 }
 
-type ProductPriceDbRow = {
-  captured_at?: string | null
-  market_price?: number | null
-  mid_price?: number | null
-  low_price?: number | null
-  high_price?: number | null
-  direct_low_price?: number | null
-}
-
 type ProductDbRow = {
   tcg_product_id: number | null
   set_id: string | null
   name: string
   clean_name: string | null
+  product_type: string | null
   subtype: string | null
   card_number: string | null
   rarity: string | null
@@ -43,15 +35,22 @@ type ProductDbRow = {
   image_count: number | null
   external_url: string | null
   modified_on: string | null
+  low_price?: number | null
+  mid_price?: number | null
+  high_price?: number | null
+  market_price?: number | null
+  direct_low_price?: number | null
+  price_updated_at?: string | null
+  currency?: string | null
   card_sets?:
     | { id: string; name: string; code: string | null }
     | { id: string; name: string; code: string | null }[]
     | null
-  product_prices?: ProductPriceDbRow[] | null
 }
 
 type CardRow = {
   productId: number
+  productType?: string | null
   name: string
   cleanName: string
   imageUrl?: string | null
@@ -107,14 +106,49 @@ function parseCardNumber(extNumber?: string | number | null): number | null {
   return null
 }
 
-function isSingleCard(card: CardRow) {
-  const numberParsed = parseCardNumber(card.extNumber)
-  // Strict rule: a card number means this is a single; absence means sealed.
-  return numberParsed !== null
+function normalizeCardNumber(value?: string | number | null) {
+  if (value === null || value === undefined) return ''
+  if (typeof value === 'number' && Number.isFinite(value)) return String(value)
+  if (typeof value === 'string') return value.trim()
+  return ''
 }
 
-function variantLabel(card: CardRow) {
-  return (card.subTypeName || 'Other').trim() || 'Other'
+function getCardNumberSortKey(value?: string | number | null) {
+  const raw = normalizeCardNumber(value)
+  if (!raw) {
+    return { group: 2, number: Number.POSITIVE_INFINITY, prefix: '', raw: '' }
+  }
+
+  const numericOnly = /^\d{1,4}(?:\s*\/\s*\d{1,4})?$/.test(raw)
+  if (numericOnly) {
+    return { group: 0, number: parseCardNumber(raw) ?? Number.POSITIVE_INFINITY, prefix: '', raw }
+  }
+
+  const match = raw.match(/^([A-Za-z]+)\s*([0-9]{1,4})/)
+  const prefix = match?.[1]?.toUpperCase() ?? raw.toUpperCase()
+  const number = match?.[2] ? Number(match[2]) : Number.POSITIVE_INFINITY
+  return { group: 1, number, prefix, raw }
+}
+
+function compareCardOrder(a: CardRow, b: CardRow) {
+  const aKey = getCardNumberSortKey(a.extNumber)
+  const bKey = getCardNumberSortKey(b.extNumber)
+  if (aKey.group !== bKey.group) return aKey.group - bKey.group
+
+  if (aKey.group === 0) {
+    if (aKey.number !== bKey.number) return aKey.number - bKey.number
+    return aKey.raw.localeCompare(bKey.raw)
+  }
+
+  if (aKey.prefix !== bKey.prefix) return aKey.prefix.localeCompare(bKey.prefix)
+  if (aKey.number !== bKey.number) return aKey.number - bKey.number
+  return aKey.raw.localeCompare(bKey.raw)
+}
+
+function isSingleCard(card: CardRow) {
+  if (card.productType) return card.productType === 'single'
+  const numberParsed = parseCardNumber(card.extNumber)
+  return numberParsed !== null
 }
 
 const chunk = <T,>(arr: T[], size: number) => {
@@ -138,42 +172,49 @@ type SetInfo = {
   generation?: number | null
 }
 
-async function upsertIndividually(
-  table: string,
-  rows: Record<string, unknown>[],
-  onConflict: string,
-  setStatus: (s: UploadStatus) => void,
-  label: string,
-) {
-  let processed = 0
-  for (const row of rows) {
-    processed += 1
-    setStatus({
-      state: 'uploading',
-      progress: `${label} ${processed}/${rows.length}`,
-    })
-    const { error } = await supabase.from(table).upsert(row, { onConflict })
-    if (error) throw error
-  }
+function toNumber(value: unknown): number | null {
+  if (value === null || value === undefined || value === '') return null
+  const num = typeof value === 'number' ? value : Number(value)
+  return Number.isFinite(num) ? num : null
 }
 
-function hydrateCards(rows: CardRow[], setCardsFn?: (r: CardRow[]) => void, setVariantsFn?: (v: string[]) => void, setFiltersFn?: (s: Set<string>) => void) {
-  const sorted = rows.sort((a: CardRow, b: CardRow) => {
-    const aNum = parseCardNumber(a.extNumber)
-    const bNum = parseCardNumber(b.extNumber)
-    if (aNum !== null && bNum !== null && aNum !== bNum) {
-      return aNum - bNum
+function toIso(value: unknown): string {
+  if (typeof value === 'string' && value.trim().length > 0) {
+    const parsed = new Date(value)
+    if (!Number.isNaN(parsed.getTime())) return parsed.toISOString()
+  }
+  return new Date().toISOString()
+}
+
+function formatError(err: unknown): string {
+  if (err === null || err === undefined) return 'Unknown error'
+  if (typeof err === 'string') return err
+  if (err instanceof Error && err.message) return err.message
+  if (typeof err === 'object') {
+    const maybeMessage = (err as { message?: unknown }).message
+    if (typeof maybeMessage === 'string' && maybeMessage.trim().length > 0) {
+      return maybeMessage
     }
+    const maybeError = (err as { error?: unknown }).error
+    if (typeof maybeError === 'string' && maybeError.trim().length > 0) {
+      return maybeError
+    }
+    try {
+      return JSON.stringify(err, Object.getOwnPropertyNames(err))
+    } catch {
+      return String(err)
+    }
+  }
+  return String(err)
+}
+
+function hydrateCards(rows: CardRow[], setCardsFn?: (r: CardRow[]) => void) {
+  const sorted = rows.sort((a: CardRow, b: CardRow) => {
+    const byNumber = compareCardOrder(a, b)
+    if (byNumber !== 0) return byNumber
     return (a.name || '').localeCompare(b.name || '')
   })
-
-  const variants = new Set<string>()
-  sorted.forEach((row) => variants.add(variantLabel(row)))
-  const variantList = Array.from(variants).sort((a, b) => a.localeCompare(b))
-
   if (setCardsFn) setCardsFn(sorted)
-  if (setVariantsFn) setVariantsFn(variantList)
-  if (setFiltersFn) setFiltersFn(new Set(variantList))
 }
 
 function App() {
@@ -183,8 +224,6 @@ function App() {
   const [viewMode, setViewMode] = useState<'singles' | 'sealed' | 'all'>(
     'singles',
   )
-  const [availableVariants, setAvailableVariants] = useState<string[]>([])
-  const [variantFilters, setVariantFilters] = useState<Set<string>>(new Set())
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [authMode, setAuthMode] = useState<'signin' | 'signup'>('signin')
@@ -211,7 +250,7 @@ function App() {
           const parsed = (result.data || []).filter(
             (row: CardRow) => !!row.productId,
           )
-          hydrateCards(parsed, setCards, setAvailableVariants, setVariantFilters)
+          hydrateCards(parsed, setCards)
           setSets([{ id: 'csv-set', name: CSV_FALLBACK_SET_TITLE }])
           setSelectedSetId('csv-set')
           setLoadMessage('Loaded from local CSV fallback.')
@@ -297,8 +336,6 @@ function App() {
     if (!selectedSetId || selectedSetId === 'all') {
       localStorage.removeItem('cardlobby.selected_set_id')
       setCards([])
-      setAvailableVariants([])
-      setVariantFilters(new Set())
       return
     }
 
@@ -309,8 +346,6 @@ function App() {
     const loadSet = async () => {
       setLoading(true)
       setCards([])
-      setAvailableVariants([])
-      setVariantFilters(new Set())
 
       try {
         const pageSize = 1000
@@ -323,15 +358,10 @@ function App() {
           const { data, error } = await supabase
             .from('products')
             .select(
-              'id, tcg_product_id, set_id, name, clean_name, product_type, subtype, card_number, rarity, card_type, hp, stage, attack1, attack2, weakness, resistance, retreat_cost, image_url, image_count, external_url, modified_on, card_sets(id,name,code), product_prices(captured_at, market_price, mid_price, low_price, high_price, direct_low_price)',
+              'id, tcg_product_id, set_id, name, clean_name, product_type, subtype, card_number, rarity, card_type, hp, stage, attack1, attack2, weakness, resistance, retreat_cost, image_url, image_count, external_url, modified_on, low_price, mid_price, high_price, market_price, direct_low_price, price_updated_at, currency, card_sets(id,name,code)',
             )
             .eq('set_id', selectedSetId)
             .order('tcg_product_id', { ascending: true })
-            .order('captured_at', {
-              ascending: false,
-              referencedTable: 'product_prices',
-            })
-            .limit(1, { referencedTable: 'product_prices' })
             .range(from, from + pageSize - 1)
 
           if (error) throw error
@@ -344,41 +374,40 @@ function App() {
 
         if (cancelled) return
 
-        const mapped: CardRow[] = all.map((row) => {
-          const setEmbed = Array.isArray(row.card_sets)
-            ? row.card_sets[0] ?? null
-            : row.card_sets ?? null
-          const latestPrice = row.product_prices?.[0] ?? null
+        const mapped: CardRow[] = all.map((product) => {
+          const setEmbed = Array.isArray(product?.card_sets)
+            ? product?.card_sets[0] ?? null
+            : product?.card_sets ?? null
           return {
-            productId: row.tcg_product_id ?? 0,
-            name: row.name,
-            cleanName: row.clean_name ?? row.name,
-            setId: row.set_id ?? setEmbed?.id ?? null,
+            productId: product?.tcg_product_id ?? 0,
+            productType: product?.product_type ?? null,
+            name: product?.name ?? 'Unknown product',
+            cleanName: product?.clean_name ?? product?.name ?? 'Unknown product',
+            setId: product?.set_id ?? setEmbed?.id ?? null,
             setName: setEmbed?.name ?? null,
-            imageUrl: row.image_url,
-            lowPrice: latestPrice?.low_price ?? null,
-            midPrice: latestPrice?.mid_price ?? null,
-            highPrice: latestPrice?.high_price ?? null,
-            marketPrice: latestPrice?.market_price ?? null,
-            directLowPrice: latestPrice?.direct_low_price ?? null,
-            extNumber: row.card_number,
-            extRarity: row.rarity,
-            extCardType: row.card_type,
-            extAttack1: row.attack1,
-            extAttack2: row.attack2,
-            extWeakness: row.weakness,
-            extResistance: row.resistance,
-            extRetreatCost: row.retreat_cost,
-            extHP: row.hp,
-            extStage: row.stage,
-            imageCount: row.image_count,
-            subTypeName: row.subtype,
-            url: row.external_url,
-            modifiedOn: row.modified_on,
+            imageUrl: product?.image_url ?? null,
+            lowPrice: product?.low_price ?? null,
+            midPrice: product?.mid_price ?? null,
+            highPrice: product?.high_price ?? null,
+            marketPrice: product?.market_price ?? null,
+            directLowPrice: product?.direct_low_price ?? null,
+            extNumber: product?.card_number ?? null,
+            extRarity: product?.rarity ?? null,
+            extCardType: product?.card_type ?? null,
+            extAttack1: product?.attack1 ?? null,
+            extAttack2: product?.attack2 ?? null,
+            extWeakness: product?.weakness ?? null,
+            extResistance: product?.resistance ?? null,
+            extRetreatCost: product?.retreat_cost ?? null,
+            extHP: product?.hp ?? null,
+            extStage: product?.stage ?? null,
+            imageCount: product?.image_count ?? null,
+            url: product?.external_url ?? null,
+            modifiedOn: product?.modified_on ?? null,
           }
         })
 
-        hydrateCards(mapped, setCards, setAvailableVariants, setVariantFilters)
+        hydrateCards(mapped, setCards)
         setLoadMessage(`Loaded ${mapped.length} products from Supabase.`)
       } catch (err) {
         if (!cancelled) {
@@ -432,24 +461,14 @@ function App() {
       const single = isSingleCard(card)
       if (viewMode === 'singles' && !single) return false
       if (viewMode === 'sealed' && single) return false
-
-      if (single) {
-        const label = variantLabel(card)
-        if (variantFilters.size > 0 && !variantFilters.has(label)) return false
-      }
-
       return true
     })
-  }, [cards, viewMode, variantFilters])
+  }, [cards, viewMode])
 
   const visibleCards = useMemo(() => {
     const sorted = [...filteredCards].sort((a, b) => {
-      const aNum = parseCardNumber(a.extNumber)
-      const bNum = parseCardNumber(b.extNumber)
-      // Prioritize entries with card numbers (singles) and order ascending.
-      if (aNum !== null && bNum !== null && aNum !== bNum) return aNum - bNum
-      if (aNum !== null && bNum === null) return -1
-      if (aNum === null && bNum !== null) return 1
+      const byNumber = compareCardOrder(a, b)
+      if (byNumber !== 0) return byNumber
       return (a.name || '').localeCompare(b.name || '')
     })
     return sorted
@@ -655,7 +674,7 @@ function App() {
           <h2>{setTitle}</h2>
           <p>
             {selectedSetId === 'all'
-              ? 'Choose a set to load its cards and sealed products.'
+              ? 'Choose a set to load its products.'
               : cards.length
                 ? `${cards.length} products loaded.`
                 : loading
@@ -723,44 +742,15 @@ function App() {
           </select>
         </div>
 
-        {availableVariants.length > 0 && (
-          <div className="chip-row">
-            {availableVariants.map((variant) => {
-              const active = variantFilters.has(variant)
-              return (
-                <button
-                  key={variant}
-                  className={active ? 'chip active' : 'chip'}
-                  onClick={() => {
-                    const next = new Set(variantFilters)
-                    if (active) {
-                      next.delete(variant)
-                    } else {
-                      next.add(variant)
-                    }
-                    // Prevent empty filter: if we cleared all, restore all.
-                    if (next.size === 0) {
-                      availableVariants.forEach((v) => next.add(v))
-                    }
-                    setVariantFilters(next)
-                  }}
-                >
-                  {variant}
-                </button>
-              )
-            })}
-          </div>
-        )}
-
         <div className="cards-grid">
           {loading && <div className="card-tile loading">Loading set…</div>}
           {!loading && visibleCards.length === 0 && (
-            <div className="card-tile loading">No cards found.</div>
+            <div className="card-tile loading">No items found.</div>
           )}
           {visibleCards.map((card, idx) => (
             <article
               className="card-tile"
-              key={`${card.productId}-${card.extNumber ?? 'na'}-${idx}`}
+              key={`${card.productId}-${idx}`}
             >
               <div className="card-media">
                 {card.imageUrl ? (
@@ -830,10 +820,10 @@ export default App
 function AdminPortal() {
   const [file, setFile] = useState<File | null>(null)
   const [status, setStatus] = useState<UploadStatus>({ state: 'idle' })
-  const [categoryName, setCategoryName] = useState('Pokémon TCG')
+  const [tcgTypeName, setTcgTypeName] = useState('Pokémon TCG')
   const [setName, setSetName] = useState('Mega Evolution — Ascended Heroes')
   const [setCode, setSetCode] = useState('MEA')
-  const [replaceCards, setReplaceCards] = useState(false)
+  const [replaceProducts, setReplaceProducts] = useState(false)
 
   const handleUpload = () => {
     if (!file) return
@@ -851,14 +841,14 @@ function AdminPortal() {
           const tcgCategoryId = first?.categoryId ?? null
           const tcgGroupId = first?.groupId ?? null
 
-          // Upsert category
-          const { data: catData, error: catError } = await supabase
-            .from('categories')
-            .upsert({ name: categoryName }, { onConflict: 'name' })
+          // Upsert TCG type
+          const { data: typeData, error: typeError } = await supabase
+            .from('tcg_types')
+            .upsert({ name: tcgTypeName }, { onConflict: 'name' })
             .select('id')
             .single()
-          if (catError) throw catError
-          const categoryId = catData.id
+          if (typeError) throw typeError
+          const categoryId = typeData.id
 
           // Upsert set
           const { data: setData, error: setError } = await supabase
@@ -867,7 +857,7 @@ function AdminPortal() {
               {
                 name: setName,
                 code: setCode || null,
-                category_id: categoryId,
+                tcg_type_id: categoryId,
                 tcg_group_id: tcgGroupId,
                 tcg_category_id: tcgCategoryId,
               },
@@ -878,20 +868,28 @@ function AdminPortal() {
           if (setError) throw setError
           const setId = setData.id
 
-          if (replaceCards) {
-            setStatus({ state: 'uploading', progress: 'Clearing existing cards' })
+          if (replaceProducts) {
+            setStatus({ state: 'uploading', progress: 'Clearing existing products' })
             const { error: deleteErr } = await supabase
-              .from('cards')
+              .from('products')
               .delete()
               .eq('set_id', setId)
             if (deleteErr) throw deleteErr
           }
 
-          // De-dupe products by tcg_product_id to avoid ON CONFLICT hitting the same row twice
-          const productMap = new Map<number, Record<string, unknown>>()
+          // De-dupe products by tcg_product_id and keep the latest price snapshot per product.
+          const productMap = new Map<
+            number,
+            { row: Record<string, unknown>; priceUpdatedAt: number }
+          >()
           rows.forEach((row) => {
-            productMap.set(row.productId, {
-              tcg_product_id: row.productId,
+            const productId = row.productId
+            if (!productId) return
+            const capturedAt = toIso(row.modifiedOn)
+            const capturedTime = Date.parse(capturedAt)
+
+            const baseRow = {
+              tcg_product_id: productId,
               name: row.name,
               clean_name: row.cleanName,
               product_type: parseCardNumber(row.extNumber) === null ? 'sealed' : 'single',
@@ -910,141 +908,61 @@ function AdminPortal() {
               image_count: row.imageCount,
               external_url: row.url,
               modified_on: row.modifiedOn || null,
-              category_id: categoryId,
               set_id: setId,
-            })
-          })
-          const products = Array.from(productMap.values())
+            }
 
+            const priceRow = {
+              low_price: toNumber(row.lowPrice),
+              mid_price: toNumber(row.midPrice),
+              high_price: toNumber(row.highPrice),
+              market_price: toNumber(row.marketPrice),
+              direct_low_price: toNumber(row.directLowPrice),
+              currency: 'USD',
+              price_updated_at: capturedAt,
+              modified_on: capturedAt,
+            }
+
+            const existing = productMap.get(productId)
+            if (!existing) {
+              productMap.set(productId, {
+                row: { ...baseRow, ...priceRow },
+                priceUpdatedAt: Number.isFinite(capturedTime) ? capturedTime : 0,
+              })
+              return
+            }
+
+            const nextRow = { ...existing.row, ...baseRow }
+            const nextTime = Number.isFinite(capturedTime) ? capturedTime : existing.priceUpdatedAt
+            if (nextTime >= existing.priceUpdatedAt) {
+              Object.assign(nextRow, priceRow)
+              existing.priceUpdatedAt = nextTime
+            }
+            existing.row = nextRow
+          })
+
+          const products = Array.from(productMap.values()).map((entry) => entry.row)
           const productChunks = chunk(products, 400)
-          const idMap = new Map<number, string>()
 
           for (let i = 0; i < productChunks.length; i++) {
             setStatus({
               state: 'uploading',
               progress: `Upserting products ${i + 1}/${productChunks.length}`,
             })
-            const { data, error } = await supabase
+            const { error } = await supabase
               .from('products')
               .upsert(productChunks[i], { onConflict: 'tcg_product_id' })
-              .select('id, tcg_product_id')
             if (error) throw error
-            data?.forEach((row) => {
-              if (row.tcg_product_id) idMap.set(row.tcg_product_id, row.id)
-            })
           }
-
-          // Upsert cards for singles
-          const singleRows = rows.filter((r) => parseCardNumber(r.extNumber) !== null)
-          const cardMap = new Map<string, Record<string, unknown>>()
-          singleRows.forEach((row) => {
-            const num = row.extNumber
-            if (!num) return
-            const key = `${setId}-${num}`
-            if (!cardMap.has(key)) {
-              cardMap.set(key, {
-                set_id: setId,
-                name: row.name,
-                number: row.extNumber,
-                rarity: row.extRarity,
-                supertype: row.extCardType,
-                subtype: row.subTypeName,
-                image_url: row.imageUrl,
-              })
-            }
-          })
-
-          const cards = Array.from(cardMap.values())
-          const cardChunks = chunk(cards, 400)
-          const cardIdMap = new Map<string, string>()
-          for (let i = 0; i < cardChunks.length; i++) {
-            setStatus({
-              state: 'uploading',
-              progress: `Upserting cards ${i + 1}/${cardChunks.length}`,
-            })
-            const { data, error } = await supabase
-              .from('cards')
-              .upsert(cardChunks[i], { onConflict: 'set_id,number' })
-              .select('id, number')
-            if (error) throw error
-            data?.forEach((row) => {
-              if (row.number) cardIdMap.set(row.number, row.id)
-            })
-          }
-
-          // De-dupe prices by product_id + captured_at to avoid double-hit
-          const priceKeyMap = new Map<string, Record<string, unknown>>()
-          rows.forEach((row) => {
-            const pid = idMap.get(row.productId)
-            if (!pid) return
-            const captured = row.modifiedOn || new Date().toISOString()
-            const key = `${pid}|${captured}`
-            if (!priceKeyMap.has(key)) {
-              priceKeyMap.set(key, {
-                product_id: pid,
-                source: 'csv',
-                currency: 'USD',
-                low_price: row.lowPrice ?? null,
-                mid_price: row.midPrice ?? null,
-                high_price: row.highPrice ?? null,
-                market_price: row.marketPrice ?? null,
-                direct_low_price: row.directLowPrice ?? null,
-                captured_at: captured,
-              })
-            }
-          })
-          const prices = Array.from(priceKeyMap.values())
-
-          // Price history for cards
-          type CardPriceUpsertRow = {
-            card_id: string
-            source: string
-            currency: string
-            price_cents: number
-            captured_at: string
-          }
-
-          const cardPrices: CardPriceUpsertRow[] = rows
-            .map((row): CardPriceUpsertRow | null => {
-              const cardId = row.extNumber ? cardIdMap.get(row.extNumber) : null
-              if (!cardId) return null
-              const cents = Math.round((row.marketPrice ?? row.midPrice ?? row.lowPrice ?? 0) * 100)
-              return {
-                card_id: cardId,
-                source: 'csv',
-                currency: 'USD',
-                price_cents: cents,
-                captured_at: row.modifiedOn || new Date().toISOString(),
-              }
-            })
-            .filter((v): v is CardPriceUpsertRow => v !== null)
-
-          await upsertIndividually(
-            'product_prices',
-            prices,
-            'product_id,source,captured_at',
-            setStatus,
-            'Upserting prices',
-          )
-
-          await upsertIndividually(
-            'price_history',
-            cardPrices,
-            'card_id,source,captured_at',
-            setStatus,
-            'Upserting card price history',
-          )
 
           setStatus({
             state: 'done',
-            message: `Imported ${products.length} products, ${cards.length} cards, ${prices.length} product prices, and ${cardPrices.length} card price rows.`,
+            message: `Imported ${products.length} products.`,
           })
         } catch (err) {
-          const message = err instanceof Error ? err.message : String(err)
-          setStatus({ state: 'error', message: message || 'Upload failed' })
+          setStatus({ state: 'error', message: formatError(err) || 'Upload failed' })
         }
       },
-      error: (err) => setStatus({ state: 'error', message: err.message }),
+      error: (err) => setStatus({ state: 'error', message: formatError(err) }),
     })
   }
 
@@ -1055,15 +973,15 @@ function AdminPortal() {
           <div className="pill">CSV import</div>
           <h2>Upload TCG CSV</h2>
           <p className="swatch-note">
-            Maps CSV rows to Supabase `products` and `product_prices`. Only admin can run.
+            Maps CSV rows to Supabase `products` with current prices. Only admin can run.
           </p>
         </div>
         <div className="admin-actions">
           <input
             type="text"
-            value={categoryName}
-            onChange={(e) => setCategoryName(e.target.value)}
-            placeholder="Category name"
+            value={tcgTypeName}
+            onChange={(e) => setTcgTypeName(e.target.value)}
+            placeholder="TCG type name"
           />
           <input
             type="text"
@@ -1080,10 +998,10 @@ function AdminPortal() {
           <label className="toggle">
             <input
               type="checkbox"
-              checked={replaceCards}
-              onChange={(e) => setReplaceCards(e.target.checked)}
+              checked={replaceProducts}
+              onChange={(e) => setReplaceProducts(e.target.checked)}
             />
-            Replace cards in set
+            Replace products in set
           </label>
           <input
             type="file"

@@ -7,7 +7,7 @@
 
 ## 2) Goals (v1)
 - Allow users to sign up / sign in (Supabase Auth).
-- Browse card categories and sets; view card details with image and latest price.
+- Browse TCG types and sets; view card details with image and latest price.
 - Search cards quickly by name (e.g., “Muk”) with typo tolerance.
 - Show historical price chart per card.
 - Let authenticated users save cards to their collection (quantity, condition, notes).
@@ -32,9 +32,11 @@
 - Images: upload to `card-images` bucket; cards store `image_url`.
 
 ## 6) Data model (current draft)
-- `categories(id, name)`
-- `card_sets(id, category_id, name, code, release_date)`
-- `cards(id, set_id, name, number, rarity, supertype, subtype, image_url, search_vector, slug)`
+- `tcg_types(id, name, slug, publisher, icon_url, logo_url, created_at)`
+- `card_sets(id, tcg_type_id, name, code, release_date, series, total_cards, symbol_url, logo_url, tcg_group_id, tcg_category_id)`
+- `cards(id, set_id, name, number, rarity, supertype, subtype, card_type, hp, stage, image_url, search_vector, slug)`
+- `card_variants(id, card_id, name, finish, tcg_product_id, image_url)`
+- `card_variant_prices(id, variant_id, source, currency, market_price, captured_at)`
 - `price_history(id, card_id, source, currency, price_cents, captured_at)`
 - `user_collections(id, user_id, card_id, condition, quantity, notes, updated_at)`
 - Storage bucket: `card-images` (private upload, public read).
@@ -68,3 +70,10 @@
 - Inventory/fulfillment: stock counts per product/variant, order statuses, and basic shipping labels.
 - Roles/permissions: admin vs buyer; store admin screens gated to owner account only.
 - Anti-fraud and audit logs for orders/refunds.
+
+### Store recommendation summary (physical cards, US-only)
+- Frontend on Vercel with a custom cart UI; checkout handled by Stripe Checkout.
+- Backend: Vercel serverless routes for `POST /api/checkout` (create Stripe session) and `POST /api/webhook` (payment confirmation -> finalize order).
+- Stripe Checkout config: US-only shipping address collection and 1-3 shipping rate options (flat or tiered).
+- Supabase tables to add later: `orders`, `order_items`, `inventory`, `shipments` (plus optional `carts` for persistence).
+- Benefits: PCI-safe hosted checkout, faster launch, minimal compliance surface while still supporting a custom cart experience.

@@ -31,10 +31,10 @@ const filePath = getArg('--file') || getArg('-f')
 const setNameArg = getArg('--set-name')
 const setCodeArg = getArg('--set-code')
 const categoryNameArg = getArg('--category-name')
-const replaceCards = args.includes('--replace-cards')
+const replaceProducts = args.includes('--replace-products') || args.includes('--replace-cards')
 
   if (!filePath) {
-  console.error('Usage: node scripts/import-single-csv.mjs --file <path> [--set-name <name>] [--set-code <code>] [--category-name <name>] [--replace-cards]')
+  console.error('Usage: node scripts/import-single-csv.mjs --file <path> [--set-name <name>] [--set-code <code>] [--category-name <name>] [--replace-products]')
   process.exit(1)
 }
 
@@ -44,14 +44,6 @@ const chunk = (arr, size) => {
   return out
 }
 
-const dedupe = (rows, keyFn) => {
-  const m = new Map()
-  rows.forEach((r) => {
-    const k = keyFn(r)
-    if (!m.has(k)) m.set(k, r)
-  })
-  return Array.from(m.values())
-}
 
 async function fetchJson(url) {
   const res = await fetch(url)
@@ -73,6 +65,20 @@ function parseCardNumber(extNumber) {
   return null
 }
 
+function toNumber(value) {
+  if (value === null || value === undefined || value === '') return null
+  const num = typeof value === 'number' ? value : Number(value)
+  return Number.isFinite(num) ? num : null
+}
+
+function toIso(value) {
+  if (typeof value === 'string' && value.trim().length > 0) {
+    const parsed = new Date(value)
+    if (!Number.isNaN(parsed.getTime())) return parsed.toISOString()
+  }
+  return new Date().toISOString()
+}
+
 async function upsert(table, rows, onConflict) {
   const chunks = chunk(rows, 400)
   for (const group of chunks) {
@@ -81,17 +87,6 @@ async function upsert(table, rows, onConflict) {
   }
 }
 
-async function upsertIndividually(table, rows, onConflict, label) {
-  let processed = 0
-  for (const row of rows) {
-    processed += 1
-    if (processed % 250 === 0 || processed === rows.length) {
-      console.log(`${label}: ${processed}/${rows.length}`)
-    }
-    const { error } = await supabase.from(table).upsert(row, { onConflict })
-    if (error) throw error
-  }
-}
 
 async function resolveSetInfo(rows) {
   const first = rows[0]
@@ -138,14 +133,14 @@ async function run() {
   const { tcgCategoryId, tcgGroupId, setName, setCode, categoryName } = await resolveSetInfo(rows)
   console.log(`Importing ${rows.length} rows for set "${setName}" (${setCode}).`)
 
-  // Upsert category
-  const { data: catData, error: catError } = await supabase
-    .from('categories')
+  // Upsert TCG type
+  const { data: typeData, error: typeError } = await supabase
+    .from('tcg_types')
     .upsert({ name: categoryName }, { onConflict: 'name' })
     .select('id')
     .single()
-  if (catError) throw catError
-  const categoryId = catData.id
+  if (typeError) throw typeError
+  const categoryId = typeData.id
 
   // Upsert set
   const { data: setData, error: setError } = await supabase
@@ -154,7 +149,7 @@ async function run() {
       {
         name: setName,
         code: setCode || null,
-        category_id: categoryId,
+        tcg_type_id: categoryId,
         tcg_group_id: tcgGroupId,
         tcg_category_id: tcgCategoryId,
       },
@@ -165,10 +160,20 @@ async function run() {
   if (setError) throw setError
   const setId = setData.id
 
-  // Products
+  if (replaceProducts) {
+    const { error: deleteErr } = await supabase.from('products').delete().eq('set_id', setId)
+    if (deleteErr) throw deleteErr
+    console.log('Cleared existing products for set before insert.')
+  }
+
+  // Products with current price snapshot
   const productMap = new Map()
   rows.forEach((row) => {
-    productMap.set(row.productId, {
+    if (!row.productId) return
+    const capturedAt = toIso(row.modifiedOn)
+    const capturedTime = Date.parse(capturedAt)
+
+    const baseRow = {
       tcg_product_id: row.productId,
       name: row.name,
       clean_name: row.cleanName,
@@ -188,98 +193,42 @@ async function run() {
       image_count: row.imageCount,
       external_url: row.url,
       modified_on: row.modifiedOn || null,
-      category_id: categoryId,
       set_id: setId,
-    })
+    }
+
+    const priceRow = {
+      low_price: toNumber(row.lowPrice),
+      mid_price: toNumber(row.midPrice),
+      high_price: toNumber(row.highPrice),
+      market_price: toNumber(row.marketPrice),
+      direct_low_price: toNumber(row.directLowPrice),
+      currency: 'USD',
+      price_updated_at: capturedAt,
+      modified_on: capturedAt,
+    }
+
+    const existing = productMap.get(row.productId)
+    if (!existing) {
+      productMap.set(row.productId, {
+        row: { ...baseRow, ...priceRow },
+        priceUpdatedAt: Number.isFinite(capturedTime) ? capturedTime : 0,
+      })
+      return
+    }
+
+    const nextRow = { ...existing.row, ...baseRow }
+    const nextTime = Number.isFinite(capturedTime) ? capturedTime : existing.priceUpdatedAt
+    if (nextTime >= existing.priceUpdatedAt) {
+      Object.assign(nextRow, priceRow)
+      existing.priceUpdatedAt = nextTime
+    }
+    existing.row = nextRow
   })
-  const products = Array.from(productMap.values())
+
+  const products = Array.from(productMap.values()).map((entry) => entry.row)
   await upsert('products', products, 'tcg_product_id')
 
-  // Map product ids
-  const { data: idRows, error: idErr } = await supabase
-    .from('products')
-    .select('id, tcg_product_id')
-    .in('tcg_product_id', products.map((p) => p.tcg_product_id))
-  if (idErr) throw idErr
-  const productIdMap = new Map(idRows.map((r) => [r.tcg_product_id, r.id]))
-
-  // Cards (singles only)
-  if (replaceCards) {
-    const { error: deleteErr } = await supabase.from('cards').delete().eq('set_id', setId)
-    if (deleteErr) throw deleteErr
-    console.log('Cleared existing cards for set before insert.')
-  }
-  const cardMap = new Map()
-  rows.forEach((row) => {
-    const num = row.extNumber
-    if (!num) return
-    if (parseCardNumber(num) === null) return
-    const key = `${setId}-${num}`
-    if (!cardMap.has(key)) {
-      cardMap.set(key, {
-        set_id: setId,
-        name: row.name,
-        number: row.extNumber,
-        rarity: row.extRarity,
-        supertype: row.extCardType,
-        subtype: row.subTypeName,
-        image_url: row.imageUrl,
-      })
-    }
-  })
-  const cards = Array.from(cardMap.values())
-  await upsert('cards', cards, 'set_id,number')
-
-  // Map card ids
-  const { data: cardRows, error: cardErr } = await supabase
-    .from('cards')
-    .select('id, number')
-    .eq('set_id', setId)
-  if (cardErr) throw cardErr
-  const cardIdMap = new Map(cardRows.map((r) => [r.number, r.id]))
-
-  // Product prices
-  let priceRows = []
-  rows.forEach((row) => {
-    const pid = productIdMap.get(row.productId)
-    if (!pid) return
-    const captured = row.modifiedOn || new Date().toISOString()
-    priceRows.push({
-      product_id: pid,
-      source: 'csv',
-      currency: 'USD',
-      low_price: row.lowPrice ?? null,
-      mid_price: row.midPrice ?? null,
-      high_price: row.highPrice ?? null,
-      market_price: row.marketPrice ?? null,
-      direct_low_price: row.directLowPrice ?? null,
-      captured_at: captured,
-    })
-  })
-  priceRows = dedupe(priceRows, (r) => `${r.product_id}|${r.source}|${r.captured_at}`)
-  await upsertIndividually('product_prices', priceRows, 'product_id,source,captured_at', 'Prices')
-
-  // Card price history
-  let cardPrices = []
-  rows.forEach((row) => {
-    const cid = row.extNumber ? cardIdMap.get(row.extNumber) : null
-    if (!cid) return
-    const cents = Math.round((row.marketPrice ?? row.midPrice ?? row.lowPrice ?? 0) * 100)
-    const captured = row.modifiedOn || new Date().toISOString()
-    cardPrices.push({
-      card_id: cid,
-      source: 'csv',
-      currency: 'USD',
-      price_cents: cents,
-      captured_at: captured,
-    })
-  })
-  cardPrices = dedupe(cardPrices, (r) => `${r.card_id}|${r.source}|${r.captured_at}`)
-  await upsertIndividually('price_history', cardPrices, 'card_id,source,captured_at', 'Card prices')
-
-  console.log(
-    `Done. Imported ${products.length} products, ${cards.length} cards, ${priceRows.length} product prices, ${cardPrices.length} card price rows.`,
-  )
+  console.log(`Done. Imported ${products.length} products.`)
 }
 
 run().catch((err) => {

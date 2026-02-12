@@ -22,8 +22,8 @@ if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
 
-const CATEGORY_ID = 3 // Pokémon
-const CATEGORY_NAME = 'Pokémon TCG'
+const CATEGORY_ID = 3 // TCGplayer Pokemon category id
+const TCG_TYPE_NAME = 'Pokémon TCG'
 
 const chunk = (arr, size) => {
   const out = []
@@ -31,14 +31,6 @@ const chunk = (arr, size) => {
   return out
 }
 
-const dedupe = (rows, keyFn) => {
-  const m = new Map()
-  rows.forEach((r) => {
-    const k = keyFn(r)
-    if (!m.has(k)) m.set(k, r)
-  })
-  return Array.from(m.values())
-}
 
 async function fetchJson(url) {
   const res = await fetch(url)
@@ -67,15 +59,15 @@ async function run() {
   const groups = groupsJson.results || []
   console.log(`Found ${groups.length} groups`)
 
-  // Ensure category exists
-  await upsert('categories', [{ name: CATEGORY_NAME }], 'name')
-  const { data: catRow, error: catErr } = await supabase
-    .from('categories')
+  // Ensure TCG type exists
+  await upsert('tcg_types', [{ name: TCG_TYPE_NAME }], 'name')
+  const { data: typeRow, error: typeErr } = await supabase
+    .from('tcg_types')
     .select('id')
-    .eq('name', CATEGORY_NAME)
+    .eq('name', TCG_TYPE_NAME)
     .single()
-  if (catErr) throw catErr
-  const categoryId = catRow.id
+  if (typeErr) throw typeErr
+  const tcgTypeId = typeRow.id
 
   for (const group of groups) {
     try {
@@ -104,7 +96,7 @@ async function run() {
           {
             name: setName,
             code: setCode,
-            category_id: categoryId,
+            tcg_type_id: tcgTypeId,
             tcg_group_id: groupId,
             tcg_category_id: CATEGORY_ID,
           },
@@ -115,11 +107,14 @@ async function run() {
       if (setErr) throw setErr
       const setId = setData.id
 
-      // Build product rows
+      // Build product rows with current price snapshot
       const productMap = new Map()
       rows.forEach((row) => {
         if (!row.productId) return
-        productMap.set(row.productId, {
+        const capturedAt = toIso(row.modifiedOn)
+        const capturedTime = Date.parse(capturedAt)
+
+        const baseRow = {
           tcg_product_id: row.productId,
           name: row.name,
           clean_name: row.cleanName,
@@ -139,93 +134,42 @@ async function run() {
           image_count: row.imageCount,
           external_url: row.url,
           modified_on: row.modifiedOn || null,
-          category_id: categoryId,
           set_id: setId,
-        })
+        }
+
+        const priceRow = {
+          low_price: toNumber(row.lowPrice),
+          mid_price: toNumber(row.midPrice),
+          high_price: toNumber(row.highPrice),
+          market_price: toNumber(row.marketPrice),
+          direct_low_price: toNumber(row.directLowPrice),
+          currency: 'USD',
+          price_updated_at: capturedAt,
+          modified_on: capturedAt,
+        }
+
+        const existing = productMap.get(row.productId)
+        if (!existing) {
+          productMap.set(row.productId, {
+            row: { ...baseRow, ...priceRow },
+            priceUpdatedAt: Number.isFinite(capturedTime) ? capturedTime : 0,
+          })
+          return
+        }
+
+        const nextRow = { ...existing.row, ...baseRow }
+        const nextTime = Number.isFinite(capturedTime) ? capturedTime : existing.priceUpdatedAt
+        if (nextTime >= existing.priceUpdatedAt) {
+          Object.assign(nextRow, priceRow)
+          existing.priceUpdatedAt = nextTime
+        }
+        existing.row = nextRow
       })
-      const products = Array.from(productMap.values())
+
+      const products = Array.from(productMap.values()).map((entry) => entry.row)
       await upsert('products', products, 'tcg_product_id')
 
-      // Map product ids
-      const { data: idRows, error: idErr } = await supabase
-        .from('products')
-        .select('id, tcg_product_id')
-        .in('tcg_product_id', products.map((p) => p.tcg_product_id))
-      if (idErr) throw idErr
-      const productIdMap = new Map(idRows.map((r) => [r.tcg_product_id, r.id]))
-
-      // Cards (singles only)
-      const cardMap = new Map()
-      rows.forEach((row) => {
-        const num = row.extNumber
-        if (!num) return
-        if (parseCardNumber(num) === null) return
-        const key = `${setId}-${num}`
-        if (!cardMap.has(key)) {
-          cardMap.set(key, {
-            set_id: setId,
-            name: row.name,
-            number: row.extNumber,
-            rarity: row.extRarity,
-            supertype: row.extCardType,
-            subtype: row.subTypeName,
-            image_url: row.imageUrl,
-          })
-        }
-      })
-      const cards = Array.from(cardMap.values())
-      await upsert('cards', cards, 'set_id,number')
-
-      // Map card ids
-      const { data: cardRows, error: cardErr } = await supabase
-        .from('cards')
-        .select('id, number')
-        .eq('set_id', setId)
-      if (cardErr) throw cardErr
-      const cardIdMap = new Map(cardRows.map((r) => [r.number, r.id]))
-
-      // Product prices
-    let priceRows = []
-    rows.forEach((row) => {
-      const pid = productIdMap.get(row.productId)
-      if (!pid) return
-      const captured = row.modifiedOn || new Date().toISOString()
-      priceRows.push({
-        product_id: pid,
-        source: 'csv',
-        currency: 'USD',
-        low_price: row.lowPrice ?? null,
-        mid_price: row.midPrice ?? null,
-        high_price: row.highPrice ?? null,
-        market_price: row.marketPrice ?? null,
-        direct_low_price: row.directLowPrice ?? null,
-        captured_at: captured,
-      })
-    })
-    priceRows = dedupe(priceRows, (r) => `${r.product_id}|${r.source}|${r.captured_at}`)
-    await upsert('product_prices', priceRows, 'product_id,source,captured_at')
-
-    // Card price history (simple mapping from market/mid/low to cents)
-    let cardPrices = []
-    rows.forEach((row) => {
-      const cid = row.extNumber ? cardIdMap.get(row.extNumber) : null
-      if (!cid) return
-      const cents = Math.round((row.marketPrice ?? row.midPrice ?? row.lowPrice ?? 0) * 100)
-      const captured = row.modifiedOn || new Date().toISOString()
-      cardPrices.push({
-        card_id: cid,
-        source: 'csv',
-        currency: 'USD',
-        price_cents: cents,
-        captured_at: captured,
-      })
-    })
-    cardPrices = dedupe(cardPrices, (r) => `${r.card_id}|${r.source}|${r.captured_at}`)
-    await upsert('price_history', cardPrices, 'card_id,source,captured_at')
-
-      console.log(
-        `  Imported ${products.length} products, ${cards.length} cards, ${priceRows.length} product prices`,
-      )
+      console.log(`  Imported ${products.length} products`)
     } catch (err) {
       console.error(`  Error processing group ${group.groupId}: ${err.message} — skipping`)
       continue
@@ -247,6 +191,20 @@ function parseCardNumber(extNumber) {
     if (m3) return Number(m3[1])
   }
   return null
+}
+
+function toNumber(value) {
+  if (value === null || value === undefined || value === '') return null
+  const num = typeof value === 'number' ? value : Number(value)
+  return Number.isFinite(num) ? num : null
+}
+
+function toIso(value) {
+  if (typeof value === 'string' && value.trim().length > 0) {
+    const parsed = new Date(value)
+    if (!Number.isNaN(parsed.getTime())) return parsed.toISOString()
+  }
+  return new Date().toISOString()
 }
 
 run().catch((err) => {
