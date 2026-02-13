@@ -166,6 +166,13 @@
   margin-top: 4px;
 }
 
+.metric-sub {
+  display: block;
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
 .cards-section {
   margin-top: 18px;
   padding: 10px 0 4px;
@@ -273,6 +280,13 @@
   border-radius: 16px;
   border: 1px solid rgba(255, 255, 255, 0.08);
   background: rgba(255, 255, 255, 0.04);
+}
+
+.auth-modal-form {
+  padding: 0;
+  border: none;
+  background: transparent;
+  box-shadow: none;
 }
 
 .auth-form input {
@@ -450,6 +464,166 @@
   font-weight: 700;
 }
 
+.collectr-importer {
+  margin-top: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.importer-head {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.importer-panel {
+  padding: 18px;
+  border-radius: 16px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.05);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.importer-row {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.importer-row input[type='url'] {
+  flex: 1;
+  min-width: 260px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.06);
+  color: #f2ecff;
+}
+
+.importer-toggle {
+  align-self: flex-start;
+}
+
+.importer-error {
+  color: #ff9fb5;
+  font-weight: 700;
+}
+
+.importer-summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 10px;
+}
+
+.summary-card {
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.04);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 14px;
+}
+
+.importer-results {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.importer-results-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.import-grid {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+
+.import-card {
+  border-radius: 16px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(15, 6, 22, 0.8);
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  box-shadow: 0 12px 30px rgba(18, 4, 28, 0.3);
+}
+
+.import-card.unmatched {
+  border-color: rgba(255, 159, 181, 0.45);
+}
+
+.import-card-media {
+  position: relative;
+  border-radius: 12px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.04);
+  aspect-ratio: 3 / 4;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.import-card-media img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.import-card-badge {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+}
+
+.import-card-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.import-card-title {
+  font-weight: 700;
+  color: #f6edff;
+}
+
+.import-card-meta {
+  font-size: 13px;
+  color: var(--text-muted);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
+.import-card-meta .dot {
+  opacity: 0.6;
+}
+
+.pill.success {
+  background: rgba(184, 240, 0, 0.15);
+  color: #b8f000;
+  border: 1px solid rgba(184, 240, 0, 0.35);
+}
+
+.pill.warning {
+  background: rgba(255, 159, 181, 0.18);
+  color: #ff9fb5;
+  border: 1px solid rgba(255, 159, 181, 0.35);
+}
+
 .modal-backdrop {
   position: fixed;
   inset: 0;
@@ -483,6 +657,17 @@
   justify-content: flex-end;
   gap: 10px;
   margin-top: 4px;
+}
+
+.modal.auth-modal {
+  gap: 14px;
+}
+
+.modal-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
 }
 
 .denial {
@@ -535,6 +720,39 @@
   display: grid;
   place-items: center;
   z-index: 1;
+}
+
+.owned-qty {
+  position: absolute;
+  top: 52px;
+  right: 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: rgba(15, 6, 22, 0.8);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  color: #f6edff;
+  font-size: 11px;
+  font-weight: 600;
+  z-index: 1;
+}
+
+.owned-qty input {
+  width: 48px;
+  padding: 2px 4px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: rgba(255, 255, 255, 0.08);
+  color: #f6edff;
+  font-weight: 600;
+  font-size: 11px;
+}
+
+.owned-qty input:focus-visible {
+  outline: 2px solid rgba(184, 240, 0, 0.6);
+  outline-offset: 1px;
 }
 
 .pokeball {

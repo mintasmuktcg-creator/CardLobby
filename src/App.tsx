@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useState } from 'react'
 import Papa from 'papaparse'
 import setCsv from '../CardCSVs/MEAscendedHeroesProductsAndPrices.csv?raw'
 import { supabase } from './lib/supabaseClient'
@@ -15,6 +15,7 @@ type CardSetDbRow = {
 }
 
 type ProductDbRow = {
+  id: string
   tcg_product_id: number | null
   set_id: string | null
   name: string
@@ -49,6 +50,7 @@ type ProductDbRow = {
 }
 
 type CardRow = {
+  productUuid?: string | null
   productId: number
   productType?: string | null
   name: string
@@ -146,6 +148,7 @@ function compareCardOrder(a: CardRow, b: CardRow) {
 }
 
 function getCardKey(card: CardRow) {
+  if (card.productUuid) return card.productUuid
   return `${card.productId}-${card.extNumber ?? 'na'}`
 }
 
@@ -171,6 +174,32 @@ type UploadStatus =
   | { state: 'uploading'; progress: string }
   | { state: 'done'; message: string }
   | { state: 'error'; message: string }
+
+type CollectrImportSummary = {
+  totalCollectr: number
+  parsedProducts: number
+  matchedProducts: number
+  skippedGraded: number
+  skippedNonEnglish: number
+}
+
+type CollectrImportResult = {
+  tcg_product_id: number
+  quantity: number
+  collectr_set: string | null
+  collectr_name?: string | null
+  collectr_image_url?: string | null
+  matched: boolean
+  name: string | null
+  set: string | null
+  code: string | null
+  product_type: string | null
+  card_number: string | null
+  rarity: string | null
+  image_url?: string | null
+  market_price?: number | null
+  english_match?: boolean
+}
 
 type SetInfo = {
   id: string
@@ -242,9 +271,7 @@ function App() {
   const [cards, setCards] = useState<CardRow[]>([])
   const [sets, setSets] = useState<SetInfo[]>([])
   const [selectedSetId, setSelectedSetId] = useState<string>('all')
-  const [viewMode, setViewMode] = useState<'singles' | 'sealed' | 'all'>(
-    'singles',
-  )
+  const [viewMode, setViewMode] = useState<'singles' | 'sealed'>('singles')
   const [availableSubtypes, setAvailableSubtypes] = useState<string[]>([])
   const [subtypeFilters, setSubtypeFilters] = useState<Set<string>>(new Set())
   const [email, setEmail] = useState('')
@@ -256,10 +283,11 @@ function App() {
   >['data']['session']>(null)
   const adminEmail = import.meta.env.VITE_ADMIN_EMAIL || ''
   const [path, setPath] = useState(window.location.pathname)
-  const [loadMessage, setLoadMessage] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
-  const [caughtCards, setCaughtCards] = useState<Record<string, boolean>>({})
+  const [ownedCounts, setOwnedCounts] = useState<Record<string, number>>({})
   const [confirmAction, setConfirmAction] = useState<'catch' | 'release' | null>(null)
+  const [pendingScroll, setPendingScroll] = useState<number | null>(null)
+  const [authOpen, setAuthOpen] = useState(false)
 
   useEffect(() => {
     const hasSupabaseEnv =
@@ -278,11 +306,9 @@ function App() {
           hydrateCards(parsed, setCards, setAvailableSubtypes, setSubtypeFilters)
           setSets([{ id: 'csv-set', name: CSV_FALLBACK_SET_TITLE }])
           setSelectedSetId('csv-set')
-          setLoadMessage('Loaded from local CSV fallback.')
           setLoading(false)
         },
-        error: (err: Error) => {
-          setLoadMessage(`CSV load failed: ${err.message}`)
+        error: () => {
           setLoading(false)
         },
       })
@@ -302,9 +328,6 @@ function App() {
         .order('name', { ascending: true })
 
       if (error) {
-        setLoadMessage(
-          `Supabase load failed (${error?.message ?? 'unknown error'}); falling back to CSV.`,
-        )
         fromCsvFallback()
         return
       }
@@ -343,7 +366,6 @@ function App() {
         'all'
 
       setSelectedSetId(defaultId)
-      setLoadMessage(`Loaded ${setList.length} sets from Supabase.`)
       setLoading(false)
     }
 
@@ -382,7 +404,6 @@ function App() {
         const all: ProductDbRow[] = []
 
         while (true) {
-          setLoadMessage(`Loading set… (${all.length} loaded)`)
 
           const { data, error } = await supabase
             .from('products')
@@ -408,6 +429,7 @@ function App() {
             ? product?.card_sets[0] ?? null
             : product?.card_sets ?? null
           return {
+            productUuid: product?.id ?? null,
             productId: product?.tcg_product_id ?? 0,
             productType: product?.product_type ?? null,
             name: product?.name ?? 'Unknown product',
@@ -438,12 +460,7 @@ function App() {
         })
 
         hydrateCards(mapped, setCards, setAvailableSubtypes, setSubtypeFilters)
-        setLoadMessage(`Loaded ${mapped.length} products from Supabase.`)
-      } catch (err) {
-        if (!cancelled) {
-          const message = err instanceof Error ? err.message : String(err)
-          setLoadMessage(`Failed to load set: ${message}`)
-        }
+      } catch {
       } finally {
         if (!cancelled) setLoading(false)
       }
@@ -467,6 +484,24 @@ function App() {
   }, [])
 
   useEffect(() => {
+    if ('scrollRestoration' in window.history) {
+      window.history.scrollRestoration = 'manual'
+    }
+    window.scrollTo({ top: 0, behavior: 'auto' })
+    return () => {
+      if ('scrollRestoration' in window.history) {
+        window.history.scrollRestoration = 'auto'
+      }
+    }
+  }, [])
+
+  useEffect(() => {
+    if (session) {
+      setAuthOpen(false)
+    }
+  }, [session])
+
+  useEffect(() => {
     const onPop = () => setPath(window.location.pathname)
     window.addEventListener('popstate', onPop)
     return () => window.removeEventListener('popstate', onPop)
@@ -478,6 +513,7 @@ function App() {
     session.user.email.toLowerCase() === adminEmail.toLowerCase()
 
   const isAdminRoute = path === '/admin'
+  const isCollectrRoute = path === '/collectr-importer'
 
   const go = (to: string) => {
     if (window.location.pathname !== to) {
@@ -485,6 +521,27 @@ function App() {
       setPath(to)
     }
   }
+
+  const openAuthModal = (mode: 'signin' | 'signup') => {
+    setAuthMode(mode)
+    setAuthMessage(null)
+    setAuthOpen(true)
+  }
+
+  const setViewModeWithScroll = (nextMode: 'singles' | 'sealed') => {
+    if (nextMode === viewMode) return
+    setPendingScroll(window.scrollY)
+    setViewMode(nextMode)
+  }
+
+  useLayoutEffect(() => {
+    if (pendingScroll === null) return
+    const target = pendingScroll
+    setPendingScroll(null)
+    requestAnimationFrame(() => {
+      window.scrollTo({ top: target, behavior: 'auto' })
+    })
+  }, [viewMode, pendingScroll])
 
   const filteredCards = useMemo(() => {
     return cards.filter((card) => {
@@ -508,15 +565,94 @@ function App() {
     return sorted
   }, [filteredCards])
 
-  const bulkSetCaught = (nextValue: boolean) => {
-    setCaughtCards((prev) => {
-      const next = { ...prev }
-      visibleCards.forEach((card) => {
-        next[getCardKey(card)] = nextValue
-      })
-      return next
-    })
+  const persistOwnedUpdates = async (
+    updates: { product_id: string; quantity: number }[],
+    deletes: string[],
+  ) => {
+    if (!session) return
+    const userId = session.user.id
+    if (updates.length) {
+      const updateChunks = chunk(updates, 400)
+      for (const group of updateChunks) {
+        const rows = group.map((row) => ({
+          user_id: userId,
+          product_id: row.product_id,
+          quantity: row.quantity,
+        }))
+        const { error } = await supabase
+          .from('user_owned_products')
+          .upsert(rows, { onConflict: 'user_id,product_id' })
+        if (error) console.error('Failed to save owned products', error)
+      }
+    }
+    if (deletes.length) {
+      const deleteChunks = chunk(deletes, 400)
+      for (const group of deleteChunks) {
+        const { error } = await supabase
+          .from('user_owned_products')
+          .delete()
+          .eq('user_id', userId)
+          .in('product_id', group)
+        if (error) console.error('Failed to remove owned products', error)
+      }
+    }
   }
+
+  const bulkSetCaught = (nextValue: boolean) => {
+    const next = { ...ownedCounts }
+    const updates: { product_id: string; quantity: number }[] = []
+    const deletes: string[] = []
+    visibleCards.forEach((card) => {
+      const key = getCardKey(card)
+      if (nextValue) {
+        const qty = next[key] && next[key] > 0 ? next[key] : 1
+        next[key] = qty
+        if (card.productUuid) updates.push({ product_id: card.productUuid, quantity: qty })
+      } else {
+        delete next[key]
+        if (card.productUuid) deletes.push(card.productUuid)
+      }
+    })
+    setOwnedCounts(next)
+    void persistOwnedUpdates(updates, deletes)
+  }
+
+  useEffect(() => {
+    if (!session) {
+      setOwnedCounts({})
+      return
+    }
+    if (cards.length === 0) return
+    const productIds = cards
+      .map((card) => card.productUuid)
+      .filter((value): value is string => !!value)
+    if (productIds.length === 0) {
+      setOwnedCounts({})
+      return
+    }
+    const loadOwned = async () => {
+      const next: Record<string, number> = {}
+      const chunks = chunk(productIds, 400)
+      for (const group of chunks) {
+        const { data, error } = await supabase
+          .from('user_owned_products')
+          .select('product_id, quantity')
+          .eq('user_id', session.user.id)
+          .in('product_id', group)
+        if (error) {
+          console.error('Failed to load owned products', error)
+          return
+        }
+        data?.forEach((row) => {
+          if (row.product_id && row.quantity) {
+            next[row.product_id] = row.quantity
+          }
+        })
+      }
+      setOwnedCounts(next)
+    }
+    void loadOwned()
+  }, [session, cards])
 
   const totalValue = useMemo(() => {
     return visibleCards.reduce((sum, card) => {
@@ -524,6 +660,31 @@ function App() {
       return sum + (Number.isFinite(price) ? price : 0)
     }, 0)
   }, [visibleCards])
+
+  const ownedMarketValue = useMemo(() => {
+    return visibleCards.reduce((sum, card) => {
+      const qty = ownedCounts[getCardKey(card)] ?? 0
+      if (qty <= 0) return sum
+      const price = card.marketPrice ?? card.midPrice ?? card.lowPrice ?? 0
+      const safePrice = Number.isFinite(price) ? price : 0
+      return sum + safePrice * qty
+    }, 0)
+  }, [visibleCards, ownedCounts])
+
+  const ownedStats = useMemo(() => {
+    const total = visibleCards.length
+    if (total === 0) return { owned: 0, total: 0, percent: 0 }
+    let owned = 0
+    visibleCards.forEach((card) => {
+      const qty = ownedCounts[getCardKey(card)] ?? 0
+      if (qty > 0) owned += 1
+    })
+    return {
+      owned,
+      total,
+      percent: (owned / total) * 100,
+    }
+  }, [visibleCards, ownedCounts])
 
   if (isAdminRoute) {
     return (
@@ -533,6 +694,9 @@ function App() {
           <div className="nav-actions">
             <button className="btn ghost" onClick={() => go('/')}>
               Back to app
+            </button>
+            <button className="btn ghost" onClick={() => go('/collectr-importer')}>
+              Collectr Importer
             </button>
             {session ? (
               <>
@@ -569,6 +733,142 @@ function App() {
     )
   }
 
+  if (isCollectrRoute) {
+    return (
+      <div className="page">
+        <nav className="nav">
+          <div className="brand">Card Lobby</div>
+          <div className="nav-actions">
+            <button className="btn ghost" onClick={() => go('/')}>
+              Browse cards
+            </button>
+            {session ? (
+              <>
+                <div className="pill muted">
+                  {session.user.email}
+                  {isAdmin ? ' Â· Admin' : ''}
+                </div>
+                <button
+                  className="btn ghost"
+                  onClick={() => {
+                    supabase.auth.signOut()
+                  }}
+                >
+                  Sign out
+                </button>
+              </>
+            ) : (
+              <>
+                <button
+                  className={authMode === 'signin' ? 'btn ghost active' : 'btn ghost'}
+                  onClick={() => {
+                    openAuthModal('signin')
+                  }}
+                >
+                  Sign in
+                </button>
+                <button
+                  className={authMode === 'signup' ? 'btn primary' : 'btn ghost'}
+                  onClick={() => {
+                    openAuthModal('signup')
+                  }}
+                >
+                  Sign up
+                </button>
+              </>
+            )}
+          </div>
+        </nav>
+
+        <CollectrImporter />
+
+        {authOpen && !session && (
+          <div
+            className="modal-backdrop"
+            role="dialog"
+            aria-modal="true"
+            onClick={() => setAuthOpen(false)}
+          >
+            <div
+              className="modal auth-modal"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="modal-head">
+                <div className="pill">{authMode === 'signin' ? 'Sign in' : 'Sign up'}</div>
+                <button className="btn ghost small" onClick={() => setAuthOpen(false)}>
+                  Close
+                </button>
+              </div>
+              <form
+                className="auth-form auth-modal-form"
+                onSubmit={async (e) => {
+                  e.preventDefault()
+                  setAuthMessage(null)
+                  if (authMode === 'signin') {
+                    const { error } = await supabase.auth.signInWithPassword({
+                      email,
+                      password,
+                    })
+                    if (error) setAuthMessage(error.message)
+                  } else {
+                    const { data, error } = await supabase.auth.signUp({
+                      email,
+                      password,
+                    })
+                    if (error) setAuthMessage(error.message)
+                    else if (data.user) {
+                      setAuthMessage('Check your email to confirm sign-up (if required).')
+                    }
+                  }
+                }}
+              >
+                <span className="swatch-note">
+                  {authMode === 'signin'
+                    ? 'Use your existing Card Lobby account'
+                    : 'Create an account to access collections and admin tools'}
+                </span>
+                <div className="auth-fields">
+                  <input
+                    type="email"
+                    placeholder="Email"
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    required
+                  />
+                  <input
+                    type="password"
+                    placeholder="Password"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    required
+                  />
+                </div>
+                <div className="auth-actions">
+                  <button
+                    type="button"
+                    className="btn ghost"
+                    onClick={() => {
+                      setAuthMode(authMode === 'signin' ? 'signup' : 'signin')
+                      setAuthMessage(null)
+                    }}
+                  >
+                    {authMode === 'signin'
+                      ? 'Need an account? Sign up'
+                      : 'Have an account? Sign in'}
+                  </button>
+                  <button className="btn primary" type="submit">
+                    {authMode === 'signin' ? 'Sign in' : 'Create account'}
+                  </button>
+                </div>
+                {authMessage && <div className="auth-message">{authMessage}</div>}
+              </form>
+            </div>
+          </div>
+        )}
+      </div>
+    )
+  }
+
   const currentSet = sets.find((s) => s.id === selectedSetId) || null
   const setTitle =
     currentSet?.name || (selectedSetId === 'csv-set' ? CSV_FALLBACK_SET_TITLE : 'Select a set')
@@ -578,17 +878,15 @@ function App() {
       <nav className="nav">
         <div className="brand">Card Lobby</div>
         <div className="nav-actions">
+          <button className="btn ghost" onClick={() => go('/collectr-importer')}>
+            Collectr Importer
+          </button>
           {session ? (
             <>
               <div className="pill muted">
                 {session.user.email}
                 {isAdmin ? ' · Admin' : ''}
               </div>
-              {isAdmin && (
-                <button className="btn ghost" onClick={() => go('/admin')}>
-                  Admin
-                </button>
-              )}
               <button
                 className="btn ghost"
                 onClick={() => {
@@ -603,8 +901,7 @@ function App() {
               <button
                 className={authMode === 'signin' ? 'btn ghost active' : 'btn ghost'}
                 onClick={() => {
-                  setAuthMode('signin')
-                  setAuthMessage(null)
+                  openAuthModal('signin')
                 }}
               >
                 Sign in
@@ -612,8 +909,7 @@ function App() {
               <button
                 className={authMode === 'signup' ? 'btn primary' : 'btn ghost'}
                 onClick={() => {
-                  setAuthMode('signup')
-                  setAuthMessage(null)
+                  openAuthModal('signup')
                 }}
               >
                 Sign up
@@ -630,88 +926,6 @@ function App() {
         Sticky pricing insights, gooey-fast deck building, and collections that
         stay organized even when the market gets messy.
       </p>
-      {loadMessage && <div className="load-note">{loadMessage}</div>}
-
-      {!session && (
-        <form
-          className="auth-form card-surface"
-          onSubmit={async (e) => {
-            e.preventDefault()
-            setAuthMessage(null)
-            if (authMode === 'signin') {
-              const { error } = await supabase.auth.signInWithPassword({
-                email,
-                password,
-              })
-              if (error) setAuthMessage(error.message)
-            } else {
-              const { data, error } = await supabase.auth.signUp({
-                email,
-                password,
-              })
-              if (error) setAuthMessage(error.message)
-              else if (data.user) {
-                setAuthMessage('Check your email to confirm sign-up (if required).')
-              }
-            }
-          }}
-        >
-          <div className="auth-form-head">
-            <div className="pill">{authMode === 'signin' ? 'Sign in' : 'Sign up'}</div>
-            <span className="swatch-note">
-              {authMode === 'signin'
-                ? 'Use your existing Card Lobby account'
-                : 'Create an account to access collections and admin tools'}
-            </span>
-          </div>
-          <div className="auth-fields">
-            <input
-              type="email"
-              placeholder="Email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              required
-            />
-            <input
-              type="password"
-              placeholder="Password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              required
-            />
-          </div>
-          <div className="auth-actions">
-            <button
-              type="button"
-              className="btn ghost"
-              onClick={() => {
-                setAuthMode(authMode === 'signin' ? 'signup' : 'signin')
-                setAuthMessage(null)
-              }}
-            >
-              {authMode === 'signin' ? 'Need an account? Sign up' : 'Have an account? Sign in'}
-            </button>
-            <button className="btn primary" type="submit">
-              {authMode === 'signin' ? 'Sign in' : 'Create account'}
-            </button>
-          </div>
-          {authMessage && <div className="auth-message">{authMessage}</div>}
-        </form>
-      )}
-
-      {isAdmin && (
-        <div className="admin-banner">
-          <div>
-            <div className="pill">Admin</div>
-            <strong>Admin portal</strong> — future controls for imports, price
-            refresh, and store settings will live here.
-          </div>
-          <button className="btn ghost" disabled>
-            Coming soon
-          </button>
-        </div>
-      )}
-
       <section className="set-hero">
         <div>
           <div className="pill muted">Set preview</div>
@@ -728,13 +942,26 @@ function App() {
           {cards.length ? (
             <div className="set-metrics">
               <div className="metric">
-                <span className="metric-label">Items</span>
-                <span className="metric-value">{visibleCards.length}</span>
+                <span className="metric-label">Owned</span>
+                <span className="metric-value">
+                  {ownedStats.owned}/{ownedStats.total}
+                </span>
+                <span className="metric-sub">
+                  {ownedStats.total === 0
+                    ? '0% complete'
+                    : `${ownedStats.percent.toFixed(1)}% complete`}
+                </span>
               </div>
               <div className="metric">
-                <span className="metric-label">Sum of market prices</span>
+                <span className="metric-label">Total set value</span>
                 <span className="metric-value">
                   {formatPrice(totalValue || 0)}
+                </span>
+              </div>
+              <div className="metric">
+                <span className="metric-label">Total set value owned</span>
+                <span className="metric-value">
+                  {formatPrice(ownedMarketValue || 0)}
                 </span>
               </div>
             </div>
@@ -751,21 +978,15 @@ function App() {
           <div className="segmented">
             <button
               className={viewMode === 'singles' ? 'seg-btn active' : 'seg-btn'}
-              onClick={() => setViewMode('singles')}
+              onClick={() => setViewModeWithScroll('singles')}
             >
               Singles
             </button>
             <button
               className={viewMode === 'sealed' ? 'seg-btn active' : 'seg-btn'}
-              onClick={() => setViewMode('sealed')}
+              onClick={() => setViewModeWithScroll('sealed')}
             >
               Sealed / kits
-            </button>
-            <button
-              className={viewMode === 'all' ? 'seg-btn active' : 'seg-btn'}
-              onClick={() => setViewMode('all')}
-            >
-              All
             </button>
           </div>
         </div>
@@ -804,7 +1025,7 @@ function App() {
           </div>
         </div>
 
-        {availableSubtypes.length > 0 && (
+        {viewMode === 'singles' && availableSubtypes.length > 0 && (
           <div className="chip-row">
             {availableSubtypes.map((subtype) => {
               const active = subtypeFilters.has(subtype)
@@ -839,7 +1060,8 @@ function App() {
           )}
           {visibleCards.map((card) => {
             const cardKey = getCardKey(card)
-            const isCaught = !!caughtCards[cardKey]
+            const ownedCount = ownedCounts[cardKey] ?? 0
+            const isCaught = ownedCount > 0
             return (
             <article
               className="card-tile"
@@ -852,14 +1074,57 @@ function App() {
                   aria-pressed={isCaught}
                   aria-label={isCaught ? 'Mark as not caught' : 'Mark as caught'}
                   onClick={() => {
-                    setCaughtCards((prev) => ({
-                      ...prev,
-                      [cardKey]: !isCaught,
-                    }))
+                    const next = { ...ownedCounts }
+                    if (isCaught) {
+                      delete next[cardKey]
+                      if (card.productUuid) {
+                        void persistOwnedUpdates([], [card.productUuid])
+                      }
+                    } else {
+                      next[cardKey] = 1
+                      if (card.productUuid) {
+                        void persistOwnedUpdates(
+                          [{ product_id: card.productUuid, quantity: 1 }],
+                          [],
+                        )
+                      }
+                    }
+                    setOwnedCounts(next)
                   }}
                 >
                   <span className="pokeball" />
                 </button>
+                {isCaught && (
+                  <label className="owned-qty">
+                    <span>Qty</span>
+                    <input
+                      type="number"
+                      min="1"
+                      step="1"
+                      value={ownedCount}
+                      aria-label="Owned quantity"
+                      onChange={(e) => {
+                        const nextValue = Number.parseInt(e.target.value, 10)
+                        const next = { ...ownedCounts }
+                        if (!Number.isFinite(nextValue) || nextValue <= 0) {
+                          delete next[cardKey]
+                          if (card.productUuid) {
+                            void persistOwnedUpdates([], [card.productUuid])
+                          }
+                        } else {
+                          next[cardKey] = nextValue
+                          if (card.productUuid) {
+                            void persistOwnedUpdates(
+                              [{ product_id: card.productUuid, quantity: nextValue }],
+                              [],
+                            )
+                          }
+                        }
+                        setOwnedCounts(next)
+                      }}
+                    />
+                  </label>
+                )}
                 {card.imageUrl ? (
                   <img src={card.imageUrl} alt={card.name} loading="lazy" />
                 ) : (
@@ -906,8 +1171,8 @@ function App() {
             </h3>
             <p className="swatch-note">
               {confirmAction === 'catch'
-                ? 'This will mark every card currently shown as caught.'
-                : 'This will unmark every card currently shown.'}
+                ? 'This will mark every visible card as caught and set quantity to 1.'
+                : 'This will clear the quantity for every visible card.'}
             </p>
             <div className="modal-actions">
               <button className="btn ghost" onClick={() => setConfirmAction(null)}>
@@ -923,6 +1188,90 @@ function App() {
                 {confirmAction === 'catch' ? 'Catch all' : 'Release all'}
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {authOpen && !session && (
+        <div
+          className="modal-backdrop"
+          role="dialog"
+          aria-modal="true"
+          onClick={() => setAuthOpen(false)}
+        >
+          <div
+            className="modal auth-modal"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="modal-head">
+              <div className="pill">{authMode === 'signin' ? 'Sign in' : 'Sign up'}</div>
+              <button className="btn ghost small" onClick={() => setAuthOpen(false)}>
+                Close
+              </button>
+            </div>
+            <form
+              className="auth-form auth-modal-form"
+              onSubmit={async (e) => {
+                e.preventDefault()
+                setAuthMessage(null)
+                if (authMode === 'signin') {
+                  const { error } = await supabase.auth.signInWithPassword({
+                    email,
+                    password,
+                  })
+                  if (error) setAuthMessage(error.message)
+                } else {
+                  const { data, error } = await supabase.auth.signUp({
+                    email,
+                    password,
+                  })
+                  if (error) setAuthMessage(error.message)
+                  else if (data.user) {
+                    setAuthMessage('Check your email to confirm sign-up (if required).')
+                  }
+                }
+              }}
+            >
+              <span className="swatch-note">
+                {authMode === 'signin'
+                  ? 'Use your existing Card Lobby account'
+                  : 'Create an account to access collections and admin tools'}
+              </span>
+              <div className="auth-fields">
+                <input
+                  type="email"
+                  placeholder="Email"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  required
+                />
+                <input
+                  type="password"
+                  placeholder="Password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  required
+                />
+              </div>
+              <div className="auth-actions">
+                <button
+                  type="button"
+                  className="btn ghost"
+                  onClick={() => {
+                    setAuthMode(authMode === 'signin' ? 'signup' : 'signin')
+                    setAuthMessage(null)
+                  }}
+                >
+                  {authMode === 'signin'
+                    ? 'Need an account? Sign up'
+                    : 'Have an account? Sign in'}
+                </button>
+                <button className="btn primary" type="submit">
+                  {authMode === 'signin' ? 'Sign in' : 'Create account'}
+                </button>
+              </div>
+              {authMessage && <div className="auth-message">{authMessage}</div>}
+            </form>
           </div>
         </div>
       )}
@@ -1161,5 +1510,190 @@ function AdminPortal() {
         {status.state === 'error' && <span className="error">{status.message}</span>}
       </div>
     </div>
+  )
+}
+
+function CollectrImporter() {
+  const [url, setUrl] = useState('')
+  const [includeNonEnglish, setIncludeNonEnglish] = useState(false)
+  const [status, setStatus] = useState<'idle' | 'loading' | 'done' | 'error'>('idle')
+  const [errorMessage, setErrorMessage] = useState<string | null>(null)
+  const [summary, setSummary] = useState<CollectrImportSummary | null>(null)
+  const [results, setResults] = useState<CollectrImportResult[]>([])
+
+  const runImport = async () => {
+    const trimmed = url.trim()
+    if (!trimmed) {
+      setErrorMessage('Enter a Collectr profile URL to import.')
+      return
+    }
+
+    setStatus('loading')
+    setErrorMessage(null)
+    setSummary(null)
+    setResults([])
+
+    try {
+      const params = new URLSearchParams({ url: trimmed })
+      if (includeNonEnglish) params.set('includeNonEnglish', '1')
+      const response = await fetch(`/api/collectr-importer?${params.toString()}`)
+      const text = await response.text()
+
+      let payload: {
+        summary?: CollectrImportSummary
+        results?: CollectrImportResult[]
+        error?: string
+        message?: string
+      } = {}
+      try {
+        payload = JSON.parse(text)
+      } catch {
+        throw new Error(
+          'Collectr importer API is not available locally. Use `vercel dev` or deploy to Vercel.',
+        )
+      }
+
+      if (!response.ok) {
+        throw new Error(payload?.error || payload?.message || 'Import failed.')
+      }
+
+      setSummary(payload.summary ?? null)
+      setResults(Array.isArray(payload.results) ? payload.results : [])
+      setStatus('done')
+    } catch (err) {
+      setStatus('error')
+      setErrorMessage(formatError(err))
+    }
+  }
+
+  return (
+    <section className="collectr-importer">
+      <div className="importer-head">
+        <div className="pill">Collectr Importer</div>
+        <h2>Import cards from a Collectr showcase</h2>
+        <p className="swatch-note">
+          Paste a public Collectr profile URL. We will scan the page for product IDs,
+          match them against your database, and show the results below.
+        </p>
+      </div>
+
+      <div className="importer-panel card-surface">
+        <form
+          className="importer-row"
+          onSubmit={(e) => {
+            e.preventDefault()
+            void runImport()
+          }}
+        >
+          <input
+            type="url"
+            placeholder="https://app.getcollectr.com/showcase/profile/..."
+            value={url}
+            onChange={(e) => setUrl(e.target.value)}
+          />
+          <button
+            className="btn primary"
+            type="submit"
+            disabled={status === 'loading'}
+          >
+            {status === 'loading' ? 'Importing...' : 'Run import'}
+          </button>
+        </form>
+        <label className="toggle importer-toggle">
+          <input
+            type="checkbox"
+            checked={includeNonEnglish}
+            onChange={(e) => setIncludeNonEnglish(e.target.checked)}
+          />
+          Include non-English sets
+        </label>
+        {errorMessage && <div className="importer-error">{errorMessage}</div>}
+        {summary && (
+          <div className="importer-summary">
+            <div className="summary-card">
+              <div className="pill muted">Collectr items</div>
+              <strong>{summary.totalCollectr}</strong>
+            </div>
+            <div className="summary-card">
+              <div className="pill muted">Parsed products</div>
+              <strong>{summary.parsedProducts}</strong>
+            </div>
+            <div className="summary-card">
+              <div className="pill muted">Matched products</div>
+              <strong>{summary.matchedProducts}</strong>
+            </div>
+            <div className="summary-card">
+              <div className="pill muted">Skipped graded</div>
+              <strong>{summary.skippedGraded}</strong>
+            </div>
+            <div className="summary-card">
+              <div className="pill muted">Skipped non-English</div>
+              <strong>{summary.skippedNonEnglish}</strong>
+            </div>
+          </div>
+        )}
+      </div>
+
+      <div className="importer-results">
+        <div className="importer-results-head">
+          <div className="pill muted">Imported cards</div>
+          <span className="swatch-note">
+            {results.length > 0
+              ? `Showing ${results.length} results.`
+              : status === 'loading'
+                ? 'Importing...'
+                : 'Run an import to see results.'}
+          </span>
+        </div>
+        <div className="import-grid">
+          {results.map((row) => {
+            const displayName = row.name || row.collectr_name || 'Unknown product'
+            const displaySet = row.set || row.collectr_set || 'Unknown set'
+            const imageUrl = row.image_url || row.collectr_image_url || null
+            return (
+              <article
+                key={`${row.tcg_product_id}-${row.collectr_set ?? 'set'}`}
+                className={`import-card${row.matched ? '' : ' unmatched'}`}
+              >
+                <div className="import-card-media">
+                  {imageUrl ? (
+                    <img src={imageUrl} alt={displayName} loading="lazy" />
+                  ) : (
+                    <div className="img-placeholder">No image</div>
+                  )}
+                  <div className="import-card-badge">
+                    <span className="pill muted">Qty {row.quantity}</span>
+                  </div>
+                </div>
+                <div className="import-card-body">
+                  <div className="import-card-title">{displayName}</div>
+                  <div className="import-card-meta">
+                    <span>{displaySet}</span>
+                  </div>
+                  <div className="import-card-meta">
+                    <span>#{row.card_number || 'â€”'}</span>
+                    <span className="dot">â€¢</span>
+                    <span>{row.rarity || 'â€”'}</span>
+                  </div>
+                  <div className="import-card-meta">
+                    <span>{row.product_type || 'â€”'}</span>
+                    <span className="dot">â€¢</span>
+                    <span>{formatPrice(row.market_price)}</span>
+                  </div>
+                  <div className="import-card-meta">
+                    <span className={`pill ${row.matched ? 'success' : 'warning'}`}>
+                      {row.matched ? 'Matched' : 'Unmatched'}
+                    </span>
+                    {row.english_match ? (
+                      <span className="pill muted">English set</span>
+                    ) : null}
+                  </div>
+                </div>
+              </article>
+            )
+          })}
+        </div>
+      </div>
+    </section>
   )
 }
