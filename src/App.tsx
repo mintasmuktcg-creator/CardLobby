@@ -145,6 +145,14 @@ function compareCardOrder(a: CardRow, b: CardRow) {
   return aKey.raw.localeCompare(bKey.raw)
 }
 
+function getCardKey(card: CardRow) {
+  return `${card.productId}-${card.extNumber ?? 'na'}`
+}
+
+function normalizeSubtype(value?: string | null) {
+  return (value || 'Other').trim() || 'Other'
+}
+
 function isSingleCard(card: CardRow) {
   if (card.productType) return card.productType === 'single'
   const numberParsed = parseCardNumber(card.extNumber)
@@ -208,13 +216,26 @@ function formatError(err: unknown): string {
   return String(err)
 }
 
-function hydrateCards(rows: CardRow[], setCardsFn?: (r: CardRow[]) => void) {
+function hydrateCards(
+  rows: CardRow[],
+  setCardsFn?: (r: CardRow[]) => void,
+  setSubtypesFn?: (s: string[]) => void,
+  setFiltersFn?: (s: Set<string>) => void,
+) {
   const sorted = rows.sort((a: CardRow, b: CardRow) => {
     const byNumber = compareCardOrder(a, b)
     if (byNumber !== 0) return byNumber
     return (a.name || '').localeCompare(b.name || '')
   })
+  const subtypeSet = new Set<string>()
+  sorted.forEach((row) => {
+    if (!isSingleCard(row)) return
+    subtypeSet.add(normalizeSubtype(row.subTypeName))
+  })
+  const subtypeList = Array.from(subtypeSet).sort((a, b) => a.localeCompare(b))
   if (setCardsFn) setCardsFn(sorted)
+  if (setSubtypesFn) setSubtypesFn(subtypeList)
+  if (setFiltersFn) setFiltersFn(new Set(subtypeList))
 }
 
 function App() {
@@ -224,6 +245,8 @@ function App() {
   const [viewMode, setViewMode] = useState<'singles' | 'sealed' | 'all'>(
     'singles',
   )
+  const [availableSubtypes, setAvailableSubtypes] = useState<string[]>([])
+  const [subtypeFilters, setSubtypeFilters] = useState<Set<string>>(new Set())
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [authMode, setAuthMode] = useState<'signin' | 'signup'>('signin')
@@ -235,6 +258,8 @@ function App() {
   const [path, setPath] = useState(window.location.pathname)
   const [loadMessage, setLoadMessage] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
+  const [caughtCards, setCaughtCards] = useState<Record<string, boolean>>({})
+  const [confirmAction, setConfirmAction] = useState<'catch' | 'release' | null>(null)
 
   useEffect(() => {
     const hasSupabaseEnv =
@@ -250,7 +275,7 @@ function App() {
           const parsed = (result.data || []).filter(
             (row: CardRow) => !!row.productId,
           )
-          hydrateCards(parsed, setCards)
+          hydrateCards(parsed, setCards, setAvailableSubtypes, setSubtypeFilters)
           setSets([{ id: 'csv-set', name: CSV_FALLBACK_SET_TITLE }])
           setSelectedSetId('csv-set')
           setLoadMessage('Loaded from local CSV fallback.')
@@ -336,6 +361,8 @@ function App() {
     if (!selectedSetId || selectedSetId === 'all') {
       localStorage.removeItem('cardlobby.selected_set_id')
       setCards([])
+      setAvailableSubtypes([])
+      setSubtypeFilters(new Set())
       return
     }
 
@@ -346,6 +373,8 @@ function App() {
     const loadSet = async () => {
       setLoading(true)
       setCards([])
+      setAvailableSubtypes([])
+      setSubtypeFilters(new Set())
 
       try {
         const pageSize = 1000
@@ -402,12 +431,13 @@ function App() {
             extHP: product?.hp ?? null,
             extStage: product?.stage ?? null,
             imageCount: product?.image_count ?? null,
+            subTypeName: product?.subtype ?? null,
             url: product?.external_url ?? null,
             modifiedOn: product?.modified_on ?? null,
           }
         })
 
-        hydrateCards(mapped, setCards)
+        hydrateCards(mapped, setCards, setAvailableSubtypes, setSubtypeFilters)
         setLoadMessage(`Loaded ${mapped.length} products from Supabase.`)
       } catch (err) {
         if (!cancelled) {
@@ -461,9 +491,13 @@ function App() {
       const single = isSingleCard(card)
       if (viewMode === 'singles' && !single) return false
       if (viewMode === 'sealed' && single) return false
+      if (single && subtypeFilters.size > 0) {
+        const label = normalizeSubtype(card.subTypeName)
+        if (!subtypeFilters.has(label)) return false
+      }
       return true
     })
-  }, [cards, viewMode])
+  }, [cards, viewMode, subtypeFilters])
 
   const visibleCards = useMemo(() => {
     const sorted = [...filteredCards].sort((a, b) => {
@@ -473,6 +507,16 @@ function App() {
     })
     return sorted
   }, [filteredCards])
+
+  const bulkSetCaught = (nextValue: boolean) => {
+    setCaughtCards((prev) => {
+      const next = { ...prev }
+      visibleCards.forEach((card) => {
+        next[getCardKey(card)] = nextValue
+      })
+      return next
+    })
+  }
 
   const totalValue = useMemo(() => {
     return visibleCards.reduce((sum, card) => {
@@ -740,19 +784,82 @@ function App() {
               </option>
             ))}
           </select>
+          <div className="bulk-actions">
+            <button
+              className="btn ghost small"
+              type="button"
+              onClick={() => setConfirmAction('catch')}
+              disabled={visibleCards.length === 0}
+            >
+              Catch all
+            </button>
+            <button
+              className="btn ghost small"
+              type="button"
+              onClick={() => setConfirmAction('release')}
+              disabled={visibleCards.length === 0}
+            >
+              Release all
+            </button>
+          </div>
         </div>
+
+        {availableSubtypes.length > 0 && (
+          <div className="chip-row">
+            {availableSubtypes.map((subtype) => {
+              const active = subtypeFilters.has(subtype)
+              return (
+                <button
+                  key={subtype}
+                  className={active ? 'chip active' : 'chip'}
+                  onClick={() => {
+                    const next = new Set(subtypeFilters)
+                    if (active) {
+                      next.delete(subtype)
+                    } else {
+                      next.add(subtype)
+                    }
+                    if (next.size === 0) {
+                      availableSubtypes.forEach((value) => next.add(value))
+                    }
+                    setSubtypeFilters(next)
+                  }}
+                >
+                  {subtype}
+                </button>
+              )
+            })}
+          </div>
+        )}
 
         <div className="cards-grid">
           {loading && <div className="card-tile loading">Loading set…</div>}
           {!loading && visibleCards.length === 0 && (
             <div className="card-tile loading">No items found.</div>
           )}
-          {visibleCards.map((card, idx) => (
+          {visibleCards.map((card) => {
+            const cardKey = getCardKey(card)
+            const isCaught = !!caughtCards[cardKey]
+            return (
             <article
               className="card-tile"
-              key={`${card.productId}-${idx}`}
+              key={cardKey}
             >
               <div className="card-media">
+                <button
+                  type="button"
+                  className={`pokeball-toggle${isCaught ? ' caught' : ''}`}
+                  aria-pressed={isCaught}
+                  aria-label={isCaught ? 'Mark as not caught' : 'Mark as caught'}
+                  onClick={() => {
+                    setCaughtCards((prev) => ({
+                      ...prev,
+                      [cardKey]: !isCaught,
+                    }))
+                  }}
+                >
+                  <span className="pokeball" />
+                </button>
                 {card.imageUrl ? (
                   <img src={card.imageUrl} alt={card.name} loading="lazy" />
                 ) : (
@@ -783,9 +890,42 @@ function App() {
                 </div>
               </div>
             </article>
-          ))}
+            )
+          })}
         </div>
       </section>
+
+      {confirmAction && (
+        <div className="modal-backdrop" role="dialog" aria-modal="true">
+          <div className="modal">
+            <div className="pill muted">Confirm</div>
+            <h3>
+              {confirmAction === 'catch'
+                ? 'Catch every visible card?'
+                : 'Release every visible card?'}
+            </h3>
+            <p className="swatch-note">
+              {confirmAction === 'catch'
+                ? 'This will mark every card currently shown as caught.'
+                : 'This will unmark every card currently shown.'}
+            </p>
+            <div className="modal-actions">
+              <button className="btn ghost" onClick={() => setConfirmAction(null)}>
+                Cancel
+              </button>
+              <button
+                className="btn primary"
+                onClick={() => {
+                  bulkSetCaught(confirmAction === 'catch')
+                  setConfirmAction(null)
+                }}
+              >
+                {confirmAction === 'catch' ? 'Catch all' : 'Release all'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <section className="palette">
         <div className="palette-header">
