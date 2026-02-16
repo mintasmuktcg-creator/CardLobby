@@ -5,6 +5,30 @@ import { supabase } from './lib/supabaseClient'
 import './App.css'
 
 const CSV_FALLBACK_SET_TITLE = 'Mega Evolution — Ascended Heroes'
+type CatalogKey = 'pokemon' | 'pokemon_japan'
+
+const CATALOGS = {
+  pokemon: {
+    label: 'Pokemon',
+    setsTable: 'pokemon_sets',
+    productsTable: 'pokemon_products',
+    embedKey: 'pokemon_sets',
+    storageKey: 'cardlobby.selected_set_id.pokemon',
+  },
+  pokemon_japan: {
+    label: 'Pokemon Japan',
+    setsTable: 'pokemon_japan_sets',
+    productsTable: 'pokemon_japan_products',
+    embedKey: 'pokemon_japan_sets',
+    storageKey: 'cardlobby.selected_set_id.pokemon_japan',
+  },
+} as const
+
+const getInitialCatalog = (): CatalogKey => {
+  if (typeof window === 'undefined') return 'pokemon'
+  const saved = window.localStorage.getItem('cardlobby.selected_catalog')
+  return saved === 'pokemon_japan' ? 'pokemon_japan' : 'pokemon'
+}
 
 type CardSetDbRow = {
   id: string
@@ -43,7 +67,11 @@ type ProductDbRow = {
   direct_low_price?: number | null
   price_updated_at?: string | null
   currency?: string | null
-  card_sets?:
+  pokemon_sets?:
+    | { id: string; name: string; code: string | null }
+    | { id: string; name: string; code: string | null }[]
+    | null
+  pokemon_japan_sets?:
     | { id: string; name: string; code: string | null }
     | { id: string; name: string; code: string | null }[]
     | null
@@ -184,7 +212,7 @@ type CollectrImportSummary = {
 }
 
 type CollectrImportResult = {
-  tcg_product_id: number
+  tcg_product_id: number | null
   quantity: number
   collectr_set: string | null
   collectr_name?: string | null
@@ -270,6 +298,7 @@ function hydrateCards(
 function App() {
   const [cards, setCards] = useState<CardRow[]>([])
   const [sets, setSets] = useState<SetInfo[]>([])
+  const [catalog, setCatalog] = useState<CatalogKey>(getInitialCatalog)
   const [selectedSetId, setSelectedSetId] = useState<string>('all')
   const [viewMode, setViewMode] = useState<'singles' | 'sealed'>('singles')
   const [availableSubtypes, setAvailableSubtypes] = useState<string[]>([])
@@ -288,12 +317,24 @@ function App() {
   const [confirmAction, setConfirmAction] = useState<'catch' | 'release' | null>(null)
   const [pendingScroll, setPendingScroll] = useState<number | null>(null)
   const [authOpen, setAuthOpen] = useState(false)
+  const catalogConfig = CATALOGS[catalog]
+  const ownedTable =
+    catalog === 'pokemon_japan'
+      ? 'user_owned_pokemon_japan_products'
+      : 'user_owned_products'
+  const ownedEnabled = true
 
   useEffect(() => {
     const hasSupabaseEnv =
       !!import.meta.env.VITE_SUPABASE_URL && !!import.meta.env.VITE_SUPABASE_ANON_KEY
 
     const fromCsvFallback = () => {
+      if (catalog !== 'pokemon') {
+        setSets([])
+        setSelectedSetId('all')
+        setLoading(false)
+        return
+      }
       setLoading(true)
       Papa.parse<CardRow>(setCsv, {
         header: true,
@@ -323,7 +364,7 @@ function App() {
 
       // Fetch sets first. Selecting a set triggers loading its products.
       const { data, error } = await supabase
-        .from('card_sets')
+        .from(catalogConfig.setsTable)
         .select('*')
         .order('name', { ascending: true })
 
@@ -357,7 +398,7 @@ function App() {
 
       setSets(setList)
 
-      const saved = localStorage.getItem('cardlobby.selected_set_id')
+      const saved = localStorage.getItem(catalogConfig.storageKey)
       const savedExists = !!saved && setList.some((s) => s.id === saved)
       const defaultId =
         (savedExists ? saved : null) ||
@@ -370,7 +411,22 @@ function App() {
     }
 
     fromSupabase()
-  }, [])
+  }, [catalog, catalogConfig.setsTable, catalogConfig.storageKey])
+
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem('cardlobby.selected_catalog', catalog)
+    }
+  }, [catalog])
+
+  useEffect(() => {
+    setSelectedSetId('all')
+    setCards([])
+    setAvailableSubtypes([])
+    setSubtypeFilters(new Set())
+    setOwnedCounts({})
+    setConfirmAction(null)
+  }, [catalog])
 
   useEffect(() => {
     const hasSupabaseEnv =
@@ -381,14 +437,14 @@ function App() {
     if (selectedSetId === 'csv-set') return
 
     if (!selectedSetId || selectedSetId === 'all') {
-      localStorage.removeItem('cardlobby.selected_set_id')
+      localStorage.removeItem(catalogConfig.storageKey)
       setCards([])
       setAvailableSubtypes([])
       setSubtypeFilters(new Set())
       return
     }
 
-    localStorage.setItem('cardlobby.selected_set_id', selectedSetId)
+    localStorage.setItem(catalogConfig.storageKey, selectedSetId)
 
     let cancelled = false
 
@@ -402,13 +458,14 @@ function App() {
         const pageSize = 1000
         let from = 0
         const all: ProductDbRow[] = []
+        const embedKey = catalogConfig.embedKey
 
         while (true) {
 
           const { data, error } = await supabase
-            .from('products')
+            .from(catalogConfig.productsTable)
             .select(
-              'id, tcg_product_id, set_id, name, clean_name, product_type, subtype, card_number, rarity, card_type, hp, stage, attack1, attack2, weakness, resistance, retreat_cost, image_url, image_count, external_url, modified_on, low_price, mid_price, high_price, market_price, direct_low_price, price_updated_at, currency, card_sets(id,name,code)',
+              `id, tcg_product_id, set_id, name, clean_name, product_type, subtype, card_number, rarity, card_type, hp, stage, attack1, attack2, weakness, resistance, retreat_cost, image_url, image_count, external_url, modified_on, low_price, mid_price, high_price, market_price, direct_low_price, price_updated_at, currency, ${embedKey}(id,name,code)`,
             )
             .eq('set_id', selectedSetId)
             .order('tcg_product_id', { ascending: true })
@@ -425,9 +482,9 @@ function App() {
         if (cancelled) return
 
         const mapped: CardRow[] = all.map((product) => {
-          const setEmbed = Array.isArray(product?.card_sets)
-            ? product?.card_sets[0] ?? null
-            : product?.card_sets ?? null
+          const embedded =
+            product?.[embedKey as 'pokemon_sets' | 'pokemon_japan_sets'] ?? null
+          const setEmbed = Array.isArray(embedded) ? embedded[0] ?? null : embedded ?? null
           return {
             productUuid: product?.id ?? null,
             productId: product?.tcg_product_id ?? 0,
@@ -471,7 +528,7 @@ function App() {
     return () => {
       cancelled = true
     }
-  }, [selectedSetId])
+  }, [catalogConfig.embedKey, catalogConfig.productsTable, catalogConfig.storageKey, selectedSetId])
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => setSession(data.session))
@@ -569,7 +626,7 @@ function App() {
     updates: { product_id: string; quantity: number }[],
     deletes: string[],
   ) => {
-    if (!session) return
+    if (!session || !ownedEnabled) return
     const userId = session.user.id
     if (updates.length) {
       const updateChunks = chunk(updates, 400)
@@ -580,7 +637,7 @@ function App() {
           quantity: row.quantity,
         }))
         const { error } = await supabase
-          .from('user_owned_products')
+          .from(ownedTable)
           .upsert(rows, { onConflict: 'user_id,product_id' })
         if (error) console.error('Failed to save owned products', error)
       }
@@ -589,7 +646,7 @@ function App() {
       const deleteChunks = chunk(deletes, 400)
       for (const group of deleteChunks) {
         const { error } = await supabase
-          .from('user_owned_products')
+          .from(ownedTable)
           .delete()
           .eq('user_id', userId)
           .in('product_id', group)
@@ -599,6 +656,7 @@ function App() {
   }
 
   const bulkSetCaught = (nextValue: boolean) => {
+    if (!ownedEnabled) return
     const next = { ...ownedCounts }
     const updates: { product_id: string; quantity: number }[] = []
     const deletes: string[] = []
@@ -618,7 +676,7 @@ function App() {
   }
 
   useEffect(() => {
-    if (!session) {
+    if (!session || !ownedEnabled) {
       setOwnedCounts({})
       return
     }
@@ -635,7 +693,7 @@ function App() {
       const chunks = chunk(productIds, 400)
       for (const group of chunks) {
         const { data, error } = await supabase
-          .from('user_owned_products')
+          .from(ownedTable)
           .select('product_id, quantity')
           .eq('user_id', session.user.id)
           .in('product_id', group)
@@ -652,7 +710,7 @@ function App() {
       setOwnedCounts(next)
     }
     void loadOwned()
-  }, [session, cards])
+  }, [session, cards, ownedEnabled, ownedTable])
 
   const totalValue = useMemo(() => {
     return visibleCards.reduce((sum, card) => {
@@ -991,6 +1049,24 @@ function App() {
           </div>
         </div>
 
+        <div className="catalog-row">
+          <div className="pill">Catalog</div>
+          <div className="segmented">
+            <button
+              className={catalog === 'pokemon' ? 'seg-btn active' : 'seg-btn'}
+              onClick={() => setCatalog('pokemon')}
+            >
+              Pokemon
+            </button>
+            <button
+              className={catalog === 'pokemon_japan' ? 'seg-btn active' : 'seg-btn'}
+              onClick={() => setCatalog('pokemon_japan')}
+            >
+              Pokemon Japan
+            </button>
+          </div>
+        </div>
+
         <div className="filter-row">
           <div className="pill">Set</div>
           <select
@@ -1006,24 +1082,24 @@ function App() {
             ))}
           </select>
           <div className="bulk-actions">
-            <button
-              className="btn ghost small"
-              type="button"
-              onClick={() => setConfirmAction('catch')}
-              disabled={visibleCards.length === 0}
-            >
-              Catch all
-            </button>
-            <button
-              className="btn ghost small"
-              type="button"
-              onClick={() => setConfirmAction('release')}
-              disabled={visibleCards.length === 0}
-            >
-              Release all
-            </button>
+              <button
+                className="btn ghost small"
+                type="button"
+                onClick={() => setConfirmAction('catch')}
+                disabled={!ownedEnabled || visibleCards.length === 0}
+              >
+                Catch all
+              </button>
+              <button
+                className="btn ghost small"
+                type="button"
+                onClick={() => setConfirmAction('release')}
+                disabled={!ownedEnabled || visibleCards.length === 0}
+              >
+                Release all
+              </button>
+            </div>
           </div>
-        </div>
 
         {viewMode === 'singles' && availableSubtypes.length > 0 && (
           <div className="chip-row">
@@ -1073,7 +1149,9 @@ function App() {
                   className={`pokeball-toggle${isCaught ? ' caught' : ''}`}
                   aria-pressed={isCaught}
                   aria-label={isCaught ? 'Mark as not caught' : 'Mark as caught'}
+                  disabled={!ownedEnabled}
                   onClick={() => {
+                    if (!ownedEnabled) return
                     const next = { ...ownedCounts }
                     if (isCaught) {
                       delete next[cardKey]
@@ -1103,7 +1181,9 @@ function App() {
                       step="1"
                       value={ownedCount}
                       aria-label="Owned quantity"
+                      disabled={!ownedEnabled}
                       onChange={(e) => {
+                        if (!ownedEnabled) return
                         const nextValue = Number.parseInt(e.target.value, 10)
                         const next = { ...ownedCounts }
                         if (!Number.isFinite(nextValue) || nextValue <= 0) {
@@ -1160,7 +1240,7 @@ function App() {
         </div>
       </section>
 
-      {confirmAction && (
+      {confirmAction && ownedEnabled && (
         <div className="modal-backdrop" role="dialog" aria-modal="true">
           <div className="modal">
             <div className="pill muted">Confirm</div>
@@ -1309,7 +1389,7 @@ export default App
 function AdminPortal() {
   const [file, setFile] = useState<File | null>(null)
   const [status, setStatus] = useState<UploadStatus>({ state: 'idle' })
-  const [tcgTypeName, setTcgTypeName] = useState('Pokémon TCG')
+  const [tcgTypeName, setTcgTypeName] = useState('Pokemon TCG')
   const [setName, setSetName] = useState('Mega Evolution — Ascended Heroes')
   const [setCode, setSetCode] = useState('MEA')
   const [replaceProducts, setReplaceProducts] = useState(false)
@@ -1341,7 +1421,7 @@ function AdminPortal() {
 
           // Upsert set
           const { data: setData, error: setError } = await supabase
-            .from('card_sets')
+            .from('pokemon_sets')
             .upsert(
               {
                 name: setName,
@@ -1360,7 +1440,7 @@ function AdminPortal() {
           if (replaceProducts) {
             setStatus({ state: 'uploading', progress: 'Clearing existing products' })
             const { error: deleteErr } = await supabase
-              .from('products')
+              .from('pokemon_products')
               .delete()
               .eq('set_id', setId)
             if (deleteErr) throw deleteErr
@@ -1438,7 +1518,7 @@ function AdminPortal() {
               progress: `Upserting products ${i + 1}/${productChunks.length}`,
             })
             const { error } = await supabase
-              .from('products')
+              .from('pokemon_products')
               .upsert(productChunks[i], { onConflict: 'tcg_product_id' })
             if (error) throw error
           }
@@ -1462,7 +1542,7 @@ function AdminPortal() {
           <div className="pill">CSV import</div>
           <h2>Upload TCG CSV</h2>
           <p className="swatch-note">
-            Maps CSV rows to Supabase `products` with current prices. Only admin can run.
+            Maps CSV rows to Supabase `pokemon_products` with current prices. Only admin can run.
           </p>
         </div>
         <div className="admin-actions">
@@ -1515,11 +1595,23 @@ function AdminPortal() {
 
 function CollectrImporter() {
   const [url, setUrl] = useState('')
-  const [includeNonEnglish, setIncludeNonEnglish] = useState(false)
   const [status, setStatus] = useState<'idle' | 'loading' | 'done' | 'error'>('idle')
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
   const [summary, setSummary] = useState<CollectrImportSummary | null>(null)
   const [results, setResults] = useState<CollectrImportResult[]>([])
+  const totalMarketValue = useMemo(() => {
+    if (!results.length) return null
+    let total = 0
+    let hasPrice = false
+    results.forEach((row) => {
+      const price = row.market_price
+      if (typeof price === 'number' && Number.isFinite(price)) {
+        total += price * (row.quantity || 0)
+        hasPrice = true
+      }
+    })
+    return hasPrice ? total : null
+  }, [results])
 
   const runImport = async () => {
     const trimmed = url.trim()
@@ -1535,7 +1627,6 @@ function CollectrImporter() {
 
     try {
       const params = new URLSearchParams({ url: trimmed })
-      if (includeNonEnglish) params.set('includeNonEnglish', '1')
       const response = await fetch(`/api/collectr-importer?${params.toString()}`)
       const text = await response.text()
 
@@ -1548,13 +1639,14 @@ function CollectrImporter() {
       try {
         payload = JSON.parse(text)
       } catch {
-        throw new Error(
-          'Collectr importer API is not available locally. Use `vercel dev` or deploy to Vercel.',
-        )
+        const fallback =
+          text?.trim() ||
+          'Collectr importer API is not available locally. Make sure `npm run dev` is running (or use `vercel dev`/deploy).'
+        throw new Error(fallback)
       }
 
       if (!response.ok) {
-        throw new Error(payload?.error || payload?.message || 'Import failed.')
+        throw new Error(payload?.error || payload?.message || text || 'Import failed.')
       }
 
       setSummary(payload.summary ?? null)
@@ -1599,17 +1691,13 @@ function CollectrImporter() {
             {status === 'loading' ? 'Importing...' : 'Run import'}
           </button>
         </form>
-        <label className="toggle importer-toggle">
-          <input
-            type="checkbox"
-            checked={includeNonEnglish}
-            onChange={(e) => setIncludeNonEnglish(e.target.checked)}
-          />
-          Include non-English sets
-        </label>
         {errorMessage && <div className="importer-error">{errorMessage}</div>}
         {summary && (
           <div className="importer-summary">
+            <div className="summary-card">
+              <div className="pill muted">Total market value</div>
+              <strong>{formatPrice(totalMarketValue)}</strong>
+            </div>
             <div className="summary-card">
               <div className="pill muted">Collectr items</div>
               <strong>{summary.totalCollectr}</strong>
@@ -1646,13 +1734,16 @@ function CollectrImporter() {
           </span>
         </div>
         <div className="import-grid">
-          {results.map((row) => {
+          {results.map((row, index) => {
             const displayName = row.name || row.collectr_name || 'Unknown product'
             const displaySet = row.set || row.collectr_set || 'Unknown set'
             const imageUrl = row.image_url || row.collectr_image_url || null
+            const key = row.tcg_product_id
+              ? `${row.tcg_product_id}-${row.collectr_set ?? 'set'}`
+              : `${index}-${row.collectr_set ?? 'set'}`
             return (
               <article
-                key={`${row.tcg_product_id}-${row.collectr_set ?? 'set'}`}
+                key={key}
                 className={`import-card${row.matched ? '' : ' unmatched'}`}
               >
                 <div className="import-card-media">
@@ -1685,7 +1776,7 @@ function CollectrImporter() {
                       {row.matched ? 'Matched' : 'Unmatched'}
                     </span>
                     {row.english_match ? (
-                      <span className="pill muted">English set</span>
+                      <span className="pill muted">Set matched</span>
                     ) : null}
                   </div>
                 </div>

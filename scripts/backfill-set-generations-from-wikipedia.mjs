@@ -12,7 +12,7 @@ const POKEMON_TCG_CATEGORY_ID = 3
 
 for (const p of ['.env.scripts', '.env', '.env.local']) {
   const full = path.resolve(process.cwd(), p)
-  if (fs.existsSync(full)) dotenv.config({ path: full })
+  if (fs.existsSync(full)) dotenv.config({ path: full, override: true })
 }
 
 const SUPABASE_URL = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL
@@ -196,15 +196,15 @@ async function run() {
   const genMap = parseWikiGenerationMap(wikitext)
   console.log(`Parsed ${genMap.size} set headings from Wikipedia.`)
 
-  console.log('Loading card_sets from Supabase...')
+  console.log('Loading pokemon_sets from Supabase...')
   const { data: sets, error: setsErr } = await supabase
-    .from('card_sets')
+    .from('pokemon_sets')
     .select('id, name, tcg_category_id')
     .eq('tcg_category_id', POKEMON_TCG_CATEGORY_ID)
   if (setsErr) throw setsErr
 
   if (!sets || sets.length === 0) {
-    console.log('No Pokemon sets found in card_sets (tcg_category_id = 3).')
+    console.log('No Pokemon sets found in pokemon_sets (tcg_category_id = 3).')
     return
   }
 
@@ -226,7 +226,7 @@ async function run() {
   for (const [gen, ids] of Array.from(idByGen.entries()).sort((a, b) => a[0] - b[0])) {
     for (const idsChunk of chunk(ids, 200)) {
       const { data, error } = await supabase
-        .from('card_sets')
+        .from('pokemon_sets')
         .update({ generation: gen })
         .in('id', idsChunk)
         .select('id')

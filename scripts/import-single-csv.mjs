@@ -7,7 +7,7 @@ import dotenv from 'dotenv'
 
 for (const p of ['.env.scripts', '.env', '.env.local']) {
   const full = path.resolve(process.cwd(), p)
-  if (fs.existsSync(full)) dotenv.config({ path: full })
+  if (fs.existsSync(full)) dotenv.config({ path: full, override: true })
 }
 
 const SUPABASE_URL = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL
@@ -115,7 +115,7 @@ async function resolveSetInfo(rows) {
 
   let categoryName = categoryNameArg
   if (!categoryName) {
-    categoryName = tcgCategoryId === 3 ? 'Pokémon TCG' : `TCG Category ${tcgCategoryId}`
+    categoryName = tcgCategoryId === 3 ? 'Pokemon TCG' : `TCG Category ${tcgCategoryId}`
   }
 
   return { tcgCategoryId, tcgGroupId, setName, setCode, categoryName }
@@ -144,7 +144,7 @@ async function run() {
 
   // Upsert set
   const { data: setData, error: setError } = await supabase
-    .from('card_sets')
+    .from('pokemon_sets')
     .upsert(
       {
         name: setName,
@@ -161,7 +161,7 @@ async function run() {
   const setId = setData.id
 
   if (replaceProducts) {
-    const { error: deleteErr } = await supabase.from('products').delete().eq('set_id', setId)
+    const { error: deleteErr } = await supabase.from('pokemon_products').delete().eq('set_id', setId)
     if (deleteErr) throw deleteErr
     console.log('Cleared existing products for set before insert.')
   }
@@ -226,7 +226,7 @@ async function run() {
   })
 
   const products = Array.from(productMap.values()).map((entry) => entry.row)
-  await upsert('products', products, 'tcg_product_id')
+  await upsert('pokemon_products', products, 'tcg_product_id')
 
   console.log(`Done. Imported ${products.length} products.`)
 }

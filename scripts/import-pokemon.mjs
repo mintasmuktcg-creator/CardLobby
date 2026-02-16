@@ -9,7 +9,7 @@ import dotenv from 'dotenv'
 //   node scripts/import-pokemon.mjs
 for (const p of ['.env.scripts', '.env', '.env.local']) {
   const full = path.resolve(process.cwd(), p)
-  if (fs.existsSync(full)) dotenv.config({ path: full })
+  if (fs.existsSync(full)) dotenv.config({ path: full, override: true })
 }
 
 const SUPABASE_URL = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL
@@ -23,7 +23,7 @@ if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
 
 const CATEGORY_ID = 3 // TCGplayer Pokemon category id
-const TCG_TYPE_NAME = 'Pokémon TCG'
+const TCG_TYPE_NAME = 'Pokemon TCG'
 
 const chunk = (arr, size) => {
   const out = []
@@ -91,7 +91,7 @@ async function run() {
 
       // Upsert set
       const { data: setData, error: setErr } = await supabase
-        .from('card_sets')
+        .from('pokemon_sets')
         .upsert(
           {
             name: setName,
@@ -167,7 +167,7 @@ async function run() {
       })
 
       const products = Array.from(productMap.values()).map((entry) => entry.row)
-      await upsert('products', products, 'tcg_product_id')
+      await upsert('pokemon_products', products, 'tcg_product_id')
 
       console.log(`  Imported ${products.length} products`)
     } catch (err) {

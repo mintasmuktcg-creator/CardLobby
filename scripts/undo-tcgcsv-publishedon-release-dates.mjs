@@ -8,7 +8,7 @@ const CATEGORY_ID = 3 // Pokemon
 
 for (const p of ['.env.scripts', '.env', '.env.local']) {
   const full = path.resolve(process.cwd(), p)
-  if (fs.existsSync(full)) dotenv.config({ path: full })
+  if (fs.existsSync(full)) dotenv.config({ path: full, override: true })
 }
 
 const SUPABASE_URL = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL
@@ -58,7 +58,7 @@ async function run() {
     // Clear only rows we previously set: (tcg_group_id matches AND release_date equals publishedOn date)
     for (const g of groupChunk) {
       const { data, error } = await supabase
-        .from('card_sets')
+        .from('pokemon_sets')
         .update({ release_date: null })
         .eq('tcg_group_id', g.groupId)
         .eq('release_date', g.publishedDate)
@@ -75,4 +75,3 @@ run().catch((err) => {
   console.error(err)
   process.exit(1)
 })
-
