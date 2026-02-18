@@ -596,6 +596,16 @@
   left: 10px;
 }
 
+.import-card-badge .qty-badge {
+  background: rgba(184, 240, 0, 0.92);
+  color: #0f1600;
+  border-color: rgba(184, 240, 0, 0.6);
+  font-weight: 700;
+  font-size: 12px;
+  letter-spacing: 0.02em;
+  box-shadow: 0 6px 14px rgba(184, 240, 0, 0.35);
+}
+
 .import-card-body {
   display: flex;
   flex-direction: column;

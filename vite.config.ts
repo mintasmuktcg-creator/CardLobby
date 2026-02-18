@@ -77,10 +77,6 @@ export default defineConfig({
             return
           }
 
-          const includeNonEnglish = ['1', 'true', 'yes', 'on'].includes(
-            (reqUrl.searchParams.get('includeNonEnglish') || '').toLowerCase(),
-          )
-
           const supabaseUrl =
             process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL
           const supabaseKey =
@@ -96,7 +92,6 @@ export default defineConfig({
           try {
             const payload = await runCollectrImport({
               url: urlParam,
-              includeNonEnglish,
               supabaseUrl,
               supabaseKey,
             })

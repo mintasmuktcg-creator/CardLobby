@@ -9,6 +9,9 @@ const loadPuppeteer = async () => {
   }
 }
 
+const COLLECTR_API_BASE = 'https://api-v2.getcollectr.com'
+const COLLECTR_ANON_USERNAME = '00000000-0000-0000-0000-000000000000'
+
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
 const decodeEscapes = (value) => {
@@ -56,6 +59,16 @@ const normalizeName = (value) => {
     .trim()
 }
 
+const stripJpTag = (value) => {
+  if (!value) return value
+  return String(value)
+    .replace(/\(\s*JP\s*\)/gi, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim()
+}
+
+const normalizeCardNameForMatch = (value) => normalizeName(stripJpTag(value))
+
 const normalizeRarity = (value) => {
   if (!value) return null
   return String(value).toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim() || null
@@ -75,6 +88,15 @@ const normalizeCardNumberForMatch = (value) => {
   }
 
   return raw.replace(/^0+(?=\d)/, '')
+}
+
+const compareSetNames = (left, right) => {
+  const leftKey = normalizeName(left)
+  const rightKey = normalizeName(right)
+  if (!leftKey || !rightKey) return false
+  return (
+    leftKey === rightKey || leftKey.includes(rightKey) || rightKey.includes(leftKey)
+  )
 }
 
 const looksLikeCardNumber = (value) => {
@@ -115,7 +137,7 @@ const findFirstValue = (value, keyPatterns, valueCheck, depth = 4) => {
 
 const buildMatchKey = (setName, cardName, cardNumber) => {
   const setKey = normalizeName(setName)
-  const nameKey = normalizeName(cardName)
+  const nameKey = normalizeCardNameForMatch(cardName)
   const numberKey = normalizeCardNumberForMatch(cardNumber)
   if (!setKey || !nameKey || !numberKey) return null
   return `${setKey}|${nameKey}|${numberKey}`
@@ -124,10 +146,60 @@ const buildMatchKey = (setName, cardName, cardNumber) => {
 const buildLooseKey = (setName, cardName, cardNumber) => {
   const parts = [
     normalizeName(setName) || '',
-    normalizeName(cardName) || '',
+    normalizeCardNameForMatch(cardName) || '',
     normalizeCardNumberForMatch(cardNumber) || '',
   ]
   return parts.join('|')
+}
+
+const buildNameSetKey = (setName, cardName) => {
+  const setKey = normalizeName(setName)
+  const nameKey = normalizeCardNameForMatch(cardName)
+  if (!setKey || !nameKey) return null
+  return `${setKey}|${nameKey}`
+}
+
+const buildJapanItemKey = (setName, cardNumber, cardName) => {
+  const setKey = normalizeName(setName)
+  const numberKey = normalizeCardNumberForMatch(cardNumber)
+  if (!setKey || !numberKey) return null
+  const nameKey = normalizeName(cardName) || ''
+  return `${setKey}|${numberKey}|${nameKey}`
+}
+
+const buildJapanChecksFromProduct = ({
+  collectrSet,
+  collectrNumber,
+  collectrName,
+  productName,
+  productSet,
+  productSetOther,
+  productNumber,
+}) => {
+  const setMatch =
+    compareSetNames(collectrSet, productSet) ||
+    compareSetNames(collectrSet, productSetOther)
+  const numberMatch =
+    !!collectrNumber &&
+    !!productNumber &&
+    normalizeCardNumberForMatch(collectrNumber) ===
+      normalizeCardNumberForMatch(productNumber)
+  const nameMatch =
+    collectrName && productName ? compareNamesLike(collectrName, productName) : null
+  return {
+    set_match: setMatch,
+    card_number_match: numberMatch,
+    name_match: nameMatch,
+  }
+}
+
+const compareNamesLike = (left, right) => {
+  const leftKey = normalizeName(left)
+  const rightKey = normalizeName(right)
+  if (!leftKey || !rightKey) return false
+  return (
+    leftKey === rightKey || leftKey.includes(rightKey) || rightKey.includes(leftKey)
+  )
 }
 
 const extractString = (block, key) => {
@@ -153,12 +225,37 @@ const isJapaneseSetName = (setName) => {
   return /(\bjp\b|\bjpn\b|japanese|pokemon\s+japan)/i.test(setName)
 }
 
+const findSetRowsByName = (setName, setMap, allowPartial = false) => {
+  if (!setName) return []
+  const normalized = normalizeName(setName)
+  if (!normalized) return []
+  const out = []
+  const seen = new Set()
+  const addRows = (rows) => {
+    if (!rows) return
+    for (const row of rows) {
+      const key = row?.id ?? row?.name ?? JSON.stringify(row)
+      if (seen.has(key)) continue
+      seen.add(key)
+      out.push(row)
+    }
+  }
+  addRows(setMap.get(normalized))
+  if (!allowPartial || out.length) return out
+  for (const [key, rows] of setMap.entries()) {
+    if (key.includes(normalized) || normalized.includes(key)) {
+      addRows(rows)
+    }
+  }
+  return out
+}
+
 const getSetStatus = (setName, englishSetMap, japanSetMap) => {
   if (!setName) return { isJapanese: false, match: false }
-  const normalized = normalizeName(setName)
-  if (!normalized) return { isJapanese: false, match: false }
-  const englishMatch = englishSetMap.has(normalized)
-  const japanMatch = japanSetMap.has(normalized)
+  const englishRows = findSetRowsByName(setName, englishSetMap, false)
+  const japanRows = findSetRowsByName(setName, japanSetMap, true)
+  const englishMatch = englishRows.length > 0
+  const japanMatch = japanRows.length > 0
   const isJapanese = isJapaneseSetName(setName) || (!englishMatch && japanMatch)
   const match = isJapanese ? japanMatch : englishMatch
   return { isJapanese, match }
@@ -181,12 +278,19 @@ const chunk = (arr, size) => {
 
 const extractCollectrItemsFromHtml = (html) => {
   const productBlocks = []
-  const idMatches = Array.from(html.matchAll(/\\"product_id\\":\\"(\d+)\\"/g))
-  for (const match of idMatches) {
-    const start = html.lastIndexOf('{', match.index ?? 0)
-    const end = html.indexOf('}', match.index ?? 0)
-    if (start === -1 || end === -1) continue
-    productBlocks.push(html.slice(start, end + 1))
+  const seenBlocks = new Set()
+  const patterns = [/\\"product_id\\":\\"(\d+)\\"/g, /"product_id":"(\d+)"/g]
+  for (const pattern of patterns) {
+    const idMatches = Array.from(html.matchAll(pattern))
+    for (const match of idMatches) {
+      const start = html.lastIndexOf('{', match.index ?? 0)
+      const end = html.indexOf('}', match.index ?? 0)
+      if (start === -1 || end === -1) continue
+      const block = html.slice(start, end + 1)
+      if (seenBlocks.has(block)) continue
+      seenBlocks.add(block)
+      productBlocks.push(block)
+    }
   }
 
   const items = productBlocks.map((block) => ({
@@ -195,6 +299,8 @@ const extractCollectrItemsFromHtml = (html) => {
     product_name: extractString(block, 'product_name'),
     quantity: extractString(block, 'quantity'),
     catalog_group: extractString(block, 'catalog_group'),
+    card_number: extractString(block, 'card_number'),
+    rarity: extractString(block, 'rarity'),
     grade_id: extractString(block, 'grade_id'),
     grade_company: extractNullable(block, 'grade_company'),
   }))
@@ -223,16 +329,38 @@ const getLooseKeyFromItem = (item) => {
   return buildMatchKey(setName, cardName, cardNumber)
 }
 
+const getFallbackKeyFromItem = (item) => {
+  if (!item || typeof item !== 'object') return null
+  const setName =
+    item.catalog_group ??
+    item.catalogGroup ??
+    item.set_name ??
+    item.setName ??
+    item.group ??
+    null
+  const cardName =
+    item.product_name ?? item.productName ?? item.name ?? item.title ?? null
+  const setKey = normalizeName(setName)
+  const nameKey = normalizeName(cardName)
+  if (!setKey && !nameKey) return null
+  return `${setKey}|${nameKey}|`
+}
+
 const mergeCollectrItems = (baseItems, domItems) => {
   if (!Array.isArray(domItems) || !domItems.length) return baseItems
   const byId = new Map()
   const byLooseKey = new Map()
+  const byFallbackKey = new Map()
 
   baseItems.forEach((item) => {
     const id = item?.product_id ?? item?.productId ?? item?.tcg_product_id ?? null
     if (id) byId.set(String(id), item)
     const key = getLooseKeyFromItem(item)
     if (key && !byLooseKey.has(key)) byLooseKey.set(key, item)
+    const fallbackKey = getFallbackKeyFromItem(item)
+    if (fallbackKey && !byFallbackKey.has(fallbackKey)) {
+      byFallbackKey.set(fallbackKey, item)
+    }
   })
 
   domItems.forEach((domItem) => {
@@ -260,9 +388,22 @@ const mergeCollectrItems = (baseItems, domItems) => {
       return
     }
 
+    const fallbackKey = getFallbackKeyFromItem(domItem)
+    if (fallbackKey && byFallbackKey.has(fallbackKey)) {
+      const target = byFallbackKey.get(fallbackKey)
+      Object.entries(domItem).forEach(([k, value]) => {
+        if (value === null || value === undefined || value === '') return
+        if (target[k] === null || target[k] === undefined || target[k] === '') {
+          target[k] = value
+        }
+      })
+      return
+    }
+
     baseItems.push(domItem)
     if (id) byId.set(String(id), domItem)
     if (key) byLooseKey.set(key, domItem)
+    if (fallbackKey) byFallbackKey.set(fallbackKey, domItem)
   })
 
   return baseItems
@@ -317,13 +458,14 @@ const normalizeCollectrItem = (item) => {
         ? item.isCard
         : null
 
-  const collectrName =
+  const rawCollectrName =
     item.product_name ??
     item.productName ??
     item.name ??
     item.title ??
     findFirstValue(item, [/product_name/i, /card_name/i, /^name$/i, /title/i]) ??
     null
+  const collectrName = stripJpTag(rawCollectrName)
 
   let setName =
     item.catalog_group ??
@@ -416,6 +558,63 @@ const getCollectrProfileId = (parsedUrl) => {
   return match ? match[1] : null
 }
 
+const fetchCollectrItemsViaApi = async (profileId) => {
+  if (!profileId) return []
+  const rawLimit = Number(process.env.COLLECTR_API_LIMIT || 60)
+  const limit = Number.isFinite(rawLimit)
+    ? Math.min(Math.max(rawLimit, 10), 100)
+    : 60
+  const rawMaxPages = Number(process.env.COLLECTR_API_MAX_PAGES || 200)
+  const maxPages = Number.isFinite(rawMaxPages)
+    ? Math.min(Math.max(rawMaxPages, 1), 500)
+    : 200
+  const anonUsername = process.env.COLLECTR_ANON_USERNAME || COLLECTR_ANON_USERNAME
+  const userAgent = 'CardLobby Collectr Importer'
+
+  let offset = 0
+  const items = []
+
+  for (let page = 0; page < maxPages; page += 1) {
+    const params = new URLSearchParams()
+    params.set('offset', String(offset))
+    params.set('limit', String(limit))
+    params.set('unstackedView', 'true')
+    params.set('username', anonUsername)
+
+    const response = await fetch(
+      `${COLLECTR_API_BASE}/data/showcase/${profileId}?${params.toString()}`,
+      {
+        headers: {
+          'user-agent': userAgent,
+          accept: 'application/json',
+        },
+      },
+    )
+
+    if (!response.ok) {
+      throw new Error(`Collectr API failed with status ${response.status}`)
+    }
+
+    const payload = await response.json()
+    const products = Array.isArray(payload?.products)
+      ? payload.products
+      : Array.isArray(payload?.data?.products)
+        ? payload.data.products
+        : Array.isArray(payload?.data?.data?.products)
+          ? payload.data.data.products
+          : []
+
+    if (!Array.isArray(products) || products.length === 0) break
+
+    items.push(...products)
+
+    if (products.length < limit) break
+    offset += limit
+  }
+
+  return items
+}
+
 const fetchCollectrItemsViaBrowser = async (url, profileId) => {
   const puppeteer = await loadPuppeteer()
   if (!puppeteer) {
@@ -499,6 +698,10 @@ const fetchCollectrItemsViaBrowser = async (url, profileId) => {
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 })
     await delay(2000)
 
+    const scrollEnv = (process.env.COLLECTR_SCROLL || '').toLowerCase()
+    const enableScroll = !(
+      scrollEnv === '0' || scrollEnv === 'false' || scrollEnv === 'no'
+    )
     const maxScrolls = 60
     const scrollDelayMs = 1200
     const maxIdleRounds = 4
@@ -525,37 +728,44 @@ const fetchCollectrItemsViaBrowser = async (url, profileId) => {
 
     lastDomCount = await getDomCount()
 
-    for (let i = 0; i < maxScrolls && idleRounds < maxIdleRounds; i += 1) {
-      await page.evaluate(() => {
-        const candidates = Array.from(document.querySelectorAll('*')).filter((el) => {
-          const style = window.getComputedStyle(el)
-          const overflowY = style.overflowY
-          return (overflowY === 'auto' || overflowY === 'scroll') && el.scrollHeight > el.clientHeight
+    if (enableScroll) {
+      for (let i = 0; i < maxScrolls && idleRounds < maxIdleRounds; i += 1) {
+        await page.evaluate(() => {
+          const candidates = Array.from(document.querySelectorAll('*')).filter(
+            (el) => {
+              const style = window.getComputedStyle(el)
+              const overflowY = style.overflowY
+              return (
+                (overflowY === 'auto' || overflowY === 'scroll') &&
+                el.scrollHeight > el.clientHeight
+              )
+            },
+          )
+          const target = candidates.sort((a, b) => b.scrollHeight - a.scrollHeight)[0]
+          if (target) {
+            target.scrollTop = target.scrollHeight
+          } else {
+            window.scrollTo(0, document.body.scrollHeight)
+          }
         })
-        const target = candidates.sort((a, b) => b.scrollHeight - a.scrollHeight)[0]
-        if (target) {
-          target.scrollTop = target.scrollHeight
-        } else {
-          window.scrollTo(0, document.body.scrollHeight)
+        await delay(scrollDelayMs)
+        try {
+          if (typeof page.waitForNetworkIdle === 'function') {
+            await page.waitForNetworkIdle({ idleTime: 1000, timeout: 10000 })
+          }
+        } catch {
+          // ignore network idle timeouts
         }
-      })
-      await delay(scrollDelayMs)
-      try {
-        if (typeof page.waitForNetworkIdle === 'function') {
-          await page.waitForNetworkIdle({ idleTime: 1000, timeout: 10000 })
-        }
-      } catch {
-        // ignore network idle timeouts
-      }
 
-      const currentCount = collected.length
-      const domCount = await getDomCount()
-      if (currentCount === lastCount && domCount === lastDomCount) {
-        idleRounds += 1
-      } else {
-        idleRounds = 0
-        lastCount = currentCount
-        lastDomCount = domCount
+        const currentCount = collected.length
+        const domCount = await getDomCount()
+        if (currentCount === lastCount && domCount === lastDomCount) {
+          idleRounds += 1
+        } else {
+          idleRounds = 0
+          lastCount = currentCount
+          lastDomCount = domCount
+        }
       }
     }
 
@@ -583,16 +793,27 @@ const fetchCollectrItemsViaBrowser = async (url, profileId) => {
 
         const findCardRoot = (node) => {
           let current = node
-          for (let i = 0; i < 7 && current; i += 1) {
+          for (let i = 0; i < 14 && current; i += 1) {
             if (current.matches?.('[data-slot="card"]')) return current
             const hasSet = current.querySelector?.('span.underline.text-muted-foreground')
-            const hasNumber = current.querySelector?.(
-              'div.flex.flex-row.flex-wrap.items-center.space-x-1.text-muted-foreground',
-            )
-            if (hasSet && hasNumber) return current
+            const hasNumberBlock =
+              current.querySelector?.(
+                'div.flex.flex-row.flex-wrap.items-center.space-x-1.text-muted-foreground',
+              ) ||
+              current.querySelector?.(
+                'div.flex.flex-col.text-xs.sm\\:text-sm.text-muted-foreground',
+              )
+            const hasNumberText = Array.from(
+              current.querySelectorAll?.('span') || [],
+            ).some((span) => looksLikeNumber(text(span)))
+            if (hasSet && (hasNumberBlock || hasNumberText)) return current
             current = current.parentElement
           }
-          return node.closest?.('[data-slot="card"]') || node.parentElement
+          return (
+            node.closest?.('[data-slot="card"]') ||
+            node.closest?.('article') ||
+            node.parentElement
+          )
         }
 
         const looksLikeNumber = (value) => {
@@ -603,6 +824,37 @@ const fetchCollectrItemsViaBrowser = async (url, profileId) => {
           return /([A-Z]{1,4}\d{1,4}(?:\/\d{1,4})?|\d{1,4}\/\d{1,4}|\d{1,4})/i.test(
             raw,
           )
+        }
+
+        const pickNumber = (values) => {
+          if (!Array.isArray(values) || !values.length) return null
+          const normalized = values
+            .map((value) => (value ? String(value).trim() : ''))
+            .filter(Boolean)
+          if (!normalized.length) return null
+          const slashMatch = normalized.find((value) =>
+            /[A-Z0-9]{0,4}\d{1,4}\/\d{1,4}/i.test(value),
+          )
+          if (slashMatch) return slashMatch
+          const alphaMatch = normalized.find((value) =>
+            /^[A-Z]{1,4}\d{1,4}$/i.test(value),
+          )
+          if (alphaMatch) return alphaMatch
+          const numericMatch = normalized.find((value) => /^\d{1,4}$/.test(value))
+          return numericMatch || null
+        }
+
+        const extractNumberFromText = (rawText) => {
+          if (!rawText) return null
+          const textValue = String(rawText).replace(/\s+/g, ' ').trim()
+          if (!textValue) return null
+          const slashMatch = textValue.match(/[A-Z0-9]{0,4}\d{1,4}\/\d{1,4}/i)
+          if (slashMatch) return slashMatch[0]
+          const alphaMatch = textValue.match(/[A-Z]{1,4}\d{1,4}/i)
+          if (alphaMatch) return alphaMatch[0]
+          const hashMatch = textValue.match(/#\s*(\d{1,4})\b/)
+          if (hashMatch) return hashMatch[1]
+          return null
         }
 
         uniqueNodes.forEach((nameNode) => {
@@ -633,11 +885,8 @@ const fetchCollectrItemsViaBrowser = async (url, profileId) => {
           if (numberDiv) {
             const spans = Array.from(numberDiv.querySelectorAll('span'))
             const values = spans.map((span) => text(span)).filter(Boolean)
-            if (values.length) {
-              const last = values[values.length - 1]
-              cardNumber = looksLikeNumber(last) ? last : null
-            }
-            const bulletIndex = values.indexOf('•')
+            cardNumber = pickNumber(values)
+            const bulletIndex = values.indexOf(String.fromCharCode(8226))
             if (bulletIndex > 0) {
               rarity = values[bulletIndex - 1] || null
             }
@@ -645,8 +894,12 @@ const fetchCollectrItemsViaBrowser = async (url, profileId) => {
 
           if (!cardNumber) {
             const spanCandidates = Array.from(card.querySelectorAll('span'))
-            const candidate = spanCandidates.find((span) => looksLikeNumber(text(span)))
-            cardNumber = candidate ? text(candidate) : null
+            const values = spanCandidates.map((span) => text(span)).filter(Boolean)
+            cardNumber = pickNumber(values)
+          }
+
+          if (!cardNumber) {
+            cardNumber = extractNumberFromText(card.textContent || '')
           }
 
           let imageUrl =
@@ -693,10 +946,13 @@ const fetchCollectrItemsViaBrowser = async (url, profileId) => {
       mergeCollectrItems(collected, domItems)
     }
 
-    if (collected.length) return collected
-
     const html = await page.content()
     const extracted = extractCollectrItemsFromHtml(html)
+    if (extracted.items.length) {
+      mergeCollectrItems(collected, extracted.items)
+    }
+
+    if (collected.length) return collected
     if (extracted.items.length) return extracted.items
     return collected
   } finally {
@@ -704,13 +960,7 @@ const fetchCollectrItemsViaBrowser = async (url, profileId) => {
   }
 }
 
-export async function runCollectrImport({
-  url,
-  includeNonEnglish = false,
-  supabaseUrl,
-  supabaseKey,
-}) {
-  void includeNonEnglish
+export async function runCollectrImport({ url, supabaseUrl, supabaseKey }) {
   if (!supabaseUrl || !supabaseKey) {
     throw new Error('Supabase env vars are missing.')
   }
@@ -745,7 +995,7 @@ export async function runCollectrImport({
 
   const { data: japanSetRows, error: japanSetErr } = await supabase
     .from('pokemon_japan_sets')
-    .select('id, name')
+    .select('id, name, name_other')
   if (japanSetErr) throw japanSetErr
 
   const buildSetMap = (rows) => {
@@ -759,6 +1009,7 @@ export async function runCollectrImport({
     }
     for (const row of rows || []) {
       add(row, row.name)
+      if (row.name_other) add(row, row.name_other)
       const colonMatch = row.name.match(/^([A-Z0-9]{2,6})\\s*:\\s*(.+)$/i)
       if (colonMatch) add(row, colonMatch[2])
       const dashMatch = row.name.match(/^([A-Z0-9]{2,6})\\s*-\\s*(.+)$/i)
@@ -772,8 +1023,19 @@ export async function runCollectrImport({
 
   let collectrItems = []
   let totalCollectr = 0
+  let htmlCardNumberLookup = null
 
-  if (process.env.COLLECTR_USE_BROWSER !== '0') {
+  if (process.env.COLLECTR_USE_API !== '0') {
+    try {
+      collectrItems = await fetchCollectrItemsViaApi(profileId)
+      totalCollectr = collectrItems.length
+    } catch {
+      collectrItems = []
+      totalCollectr = 0
+    }
+  }
+
+  if (!collectrItems.length && process.env.COLLECTR_USE_BROWSER !== '0') {
     try {
       collectrItems = await fetchCollectrItemsViaBrowser(
         parsedUrl.toString(),
@@ -783,6 +1045,49 @@ export async function runCollectrImport({
     } catch (err) {
       collectrItems = []
       totalCollectr = 0
+    }
+  }
+
+  if (collectrItems.length) {
+    const missingCardNumbers = collectrItems.some((item) => {
+      const cardNumber =
+        item?.card_number ??
+        item?.cardNumber ??
+        item?.collector_number ??
+        item?.collectorNumber ??
+        item?.number ??
+        item?.card_no ??
+        item?.cardNo ??
+        item?.num ??
+        null
+      return !cardNumber
+    })
+    if (missingCardNumbers) {
+      try {
+        const response = await fetch(parsedUrl.toString(), {
+          headers: { 'user-agent': 'CardLobby Collectr Importer' },
+        })
+        if (response.ok) {
+          const html = await response.text()
+          const extracted = extractCollectrItemsFromHtml(html)
+          if (extracted.items.length) {
+            mergeCollectrItems(collectrItems, extracted.items)
+            totalCollectr = Math.max(
+              totalCollectr,
+              extracted.totalBlocks || extracted.items.length,
+            )
+            const lookup = new Map()
+            extracted.items.forEach((item) => {
+              const key = buildNameSetKey(item.catalog_group, item.product_name)
+              const number = item.card_number
+              if (key && number && !lookup.has(key)) lookup.set(key, number)
+            })
+            if (lookup.size) htmlCardNumberLookup = lookup
+          }
+        }
+      } catch {
+        // ignore html enrichment errors
+      }
     }
   }
 
@@ -804,6 +1109,15 @@ export async function runCollectrImport({
     const extracted = extractCollectrItemsFromHtml(html)
     collectrItems = extracted.items
     totalCollectr = extracted.totalBlocks || collectrItems.length
+    if (extracted.items.length) {
+      const lookup = new Map()
+      extracted.items.forEach((item) => {
+        const key = buildNameSetKey(item.catalog_group, item.product_name)
+        const number = item.card_number
+        if (key && number && !lookup.has(key)) lookup.set(key, number)
+      })
+      if (lookup.size) htmlCardNumberLookup = lookup
+    }
     if (!collectrItems.length) {
       throw new Error(
         'No items found in Collectr HTML. The site may be blocking automated requests. Try setting COLLECTR_HEADLESS=0.',
@@ -814,8 +1128,6 @@ export async function runCollectrImport({
   const productMap = new Map()
   const missingMap = new Map()
   let skippedGraded = 0
-  const skippedNonEnglish = 0
-
   for (const item of collectrItems) {
     const normalized = normalizeCollectrItem(item)
     if (!normalized) continue
@@ -833,22 +1145,48 @@ export async function runCollectrImport({
       rarity,
     } = normalized
 
+    const setStatus = getSetStatus(setName, englishSetMap, japanSetMap)
+    if (setStatus.isJapanese) {
+      console.log(
+        '[collectr-japan-scrape]',
+        JSON.stringify(
+          {
+            productId,
+            quantity,
+            setName,
+            collectrName,
+            cardNumber,
+            rarity,
+            collectrImageUrl,
+            gradeCompany,
+            gradeId,
+            isCard,
+          },
+          null,
+          2,
+        ),
+      )
+    }
+
     if (isCollectrGraded({ gradeCompany, gradeId, isCard })) {
       skippedGraded += 1
       continue
     }
 
-    const setStatus = getSetStatus(setName, englishSetMap, japanSetMap)
-
     if (!productId) {
-      const matchKey = buildMatchKey(setName, collectrName, cardNumber)
-      const bucketKey = matchKey || buildLooseKey(setName, collectrName, cardNumber)
+      const matchKey = setStatus.isJapanese
+        ? buildJapanItemKey(setName, cardNumber, collectrName)
+        : buildMatchKey(setName, collectrName, cardNumber)
+      const bucketKey =
+        matchKey ||
+        (setStatus.isJapanese
+          ? buildJapanItemKey(setName, cardNumber, null)
+          : buildLooseKey(setName, collectrName, cardNumber))
       const current = missingMap.get(bucketKey) || {
         productId: null,
         quantity: 0,
         setName,
         isJapanese: setStatus.isJapanese,
-        englishMatch: setStatus.match,
         collectrName: null,
         collectrImageUrl: null,
         cardNumber: null,
@@ -858,7 +1196,6 @@ export async function runCollectrImport({
       current.quantity += quantity
       if (!current.setName && setName) current.setName = setName
       current.isJapanese = current.isJapanese || setStatus.isJapanese
-      current.englishMatch = current.englishMatch || setStatus.match
       if (!current.collectrName && collectrName) current.collectrName = collectrName
       if (!current.collectrImageUrl && collectrImageUrl) {
         current.collectrImageUrl = collectrImageUrl
@@ -875,18 +1212,20 @@ export async function runCollectrImport({
       quantity: 0,
       setName,
       isJapanese: setStatus.isJapanese,
-      englishMatch: setStatus.match,
       collectrName: null,
       collectrImageUrl: null,
+      cardNumber: null,
+      rarity: null,
     }
     current.quantity += quantity
     if (!current.setName && setName) current.setName = setName
     current.isJapanese = current.isJapanese || setStatus.isJapanese
-    current.englishMatch = current.englishMatch || setStatus.match
     if (!current.collectrName && collectrName) current.collectrName = collectrName
     if (!current.collectrImageUrl && collectrImageUrl) {
       current.collectrImageUrl = collectrImageUrl
     }
+    if (!current.cardNumber && cardNumber) current.cardNumber = cardNumber
+    if (!current.rarity && rarity) current.rarity = rarity
     productMap.set(productId, current)
   }
 
@@ -903,14 +1242,22 @@ export async function runCollectrImport({
     }
   }
 
+  const getEmbedSelect = (embedKey) => {
+    if (embedKey === 'pokemon_japan_sets') {
+      return `${embedKey}(id, name, name_other, code)`
+    }
+    return `${embedKey}(id, name, code)`
+  }
+
   const fetchProducts = async (ids, table, embedKey) => {
     const rows = []
     const groups = chunk(ids, 400)
+    const embedSelect = getEmbedSelect(embedKey)
     for (const group of groups) {
       const { data, error } = await supabase
         .from(table)
         .select(
-          `tcg_product_id, name, product_type, card_number, rarity, image_url, market_price, ${embedKey}(name, code)`,
+          `tcg_product_id, name, product_type, card_number, rarity, image_url, market_price, ${embedSelect}`,
         )
         .in('tcg_product_id', group)
       if (error) throw error
@@ -922,11 +1269,12 @@ export async function runCollectrImport({
   const fetchProductsBySetIds = async (setIds, table, embedKey) => {
     const rows = []
     const groups = chunk(setIds, 200)
+    const embedSelect = getEmbedSelect(embedKey)
     for (const group of groups) {
       const { data, error } = await supabase
         .from(table)
         .select(
-          `tcg_product_id, name, product_type, card_number, rarity, image_url, market_price, ${embedKey}(id, name, code)`,
+          `tcg_product_id, set_id, name, product_type, card_number, rarity, image_url, market_price, ${embedSelect}`,
         )
         .in('set_id', group)
       if (error) throw error
@@ -949,64 +1297,226 @@ export async function runCollectrImport({
     japanRows.map((row) => [row.tcg_product_id, row]),
   )
 
-  const matchMissingItems = async (items, setMap, table, embedKey) => {
+  const matchMissingItems = async (
+    items,
+    setMap,
+    table,
+    embedKey,
+    allowPartial = false,
+  ) => {
     if (!items.length) return new Map()
     const setIds = new Set()
-    for (const item of items) {
-      const normalized = normalizeName(item.setName)
-      if (!normalized) continue
-      const setRows = setMap.get(normalized) || []
-      setRows.forEach((row) => setIds.add(row.id))
-    }
+    const itemSetIds = new Map()
+    items.forEach((item) => {
+      const rows = findSetRowsByName(item.setName, setMap, allowPartial)
+      const ids = rows.map((row) => row.id)
+      if (ids.length) {
+        itemSetIds.set(item, ids)
+        ids.forEach((id) => setIds.add(id))
+      }
+    })
     const ids = Array.from(setIds)
     if (!ids.length) return new Map()
 
     const rows = await fetchProductsBySetIds(ids, table, embedKey)
-    const lookup = new Map()
+    const index = new Map()
     rows.forEach((row) => {
-      const embedded = row?.[embedKey] ?? null
-      const setEmbed = Array.isArray(embedded) ? embedded[0] ?? null : embedded ?? null
-      const key = buildMatchKey(setEmbed?.name, row?.name, row?.card_number)
-      if (!key) return
-      if (!lookup.has(key)) lookup.set(key, row)
+      const numberKey = normalizeCardNumberForMatch(row?.card_number)
+      if (!row?.set_id || !numberKey) return
+      const key = `${row.set_id}|${numberKey}`
+      const list = index.get(key) || []
+      list.push(row)
+      index.set(key, list)
     })
+
+    const lookup = new Map()
+    items.forEach((item) => {
+      const itemKey =
+        buildMatchKey(item.setName, item.collectrName, item.cardNumber) ||
+        buildLooseKey(item.setName, item.collectrName, item.cardNumber)
+      if (!itemKey || !itemKey.replace(/\|/g, '').trim()) return
+      const numberKey = normalizeCardNumberForMatch(item.cardNumber)
+      const idsForItem = itemSetIds.get(item) || []
+      let matched = null
+      if (numberKey && idsForItem.length) {
+        for (const setId of idsForItem) {
+          const list = index.get(`${setId}|${numberKey}`) || []
+          if (!list.length) continue
+          if (item.collectrName) {
+            matched = list.find((row) =>
+              compareNamesLike(row?.name, item.collectrName),
+            )
+          }
+          if (!matched) matched = list[0]
+          if (matched) break
+        }
+      }
+      if (matched) lookup.set(itemKey, matched)
+    })
+
+    return lookup
+  }
+
+  const matchJapaneseMissingItems = async (items) => {
+    if (!items.length) return new Map()
+    const lookup = new Map()
+
+    for (const item of items) {
+      const collectrSet = item.setName || null
+      const collectrName = item.collectrName || null
+      const rawCardNumber =
+        typeof item.cardNumber === 'string'
+          ? item.cardNumber.trim()
+          : item.cardNumber ?? null
+
+      if (!collectrSet || !rawCardNumber) {
+        item.japaneseChecks = {
+          set_match: !!collectrSet,
+          card_number_match: !!rawCardNumber,
+          name_match: collectrName ? false : null,
+        }
+        continue
+      }
+
+      let query = supabase
+        .from('pokemon_japan_products')
+        .select(
+          'tcg_product_id, set_id, name, product_type, card_number, rarity, image_url, market_price, pokemon_japan_sets(id, name, name_other, code)',
+        )
+        .eq('card_number', rawCardNumber)
+
+      if (collectrName) {
+        query = query.ilike('name', `%${collectrName}%`)
+      }
+      if (collectrSet) {
+        query = query.or(
+          `name.ilike.%${collectrSet}%,name_other.ilike.%${collectrSet}%`,
+          { foreignTable: 'pokemon_japan_sets' },
+        )
+      }
+
+      const { data, error } = await query.limit(5)
+      if (error) throw error
+
+      const product = Array.isArray(data) ? data[0] ?? null : null
+      const embedded = product?.pokemon_japan_sets ?? null
+      const setEmbed = Array.isArray(embedded) ? embedded[0] ?? null : embedded ?? null
+      const productSet = setEmbed?.name ?? null
+      const productSetOther = setEmbed?.name_other ?? null
+
+      const checks = buildJapanChecksFromProduct({
+        collectrSet,
+        collectrNumber: rawCardNumber,
+        collectrName,
+        productName: product?.name ?? null,
+        productSet,
+        productSetOther,
+        productNumber: product?.card_number ?? null,
+      })
+      item.japaneseChecks = checks
+
+      const itemKey =
+        item.matchKey ||
+        buildJapanItemKey(collectrSet, rawCardNumber, collectrName)
+      if (!itemKey) continue
+      lookup.set(itemKey, { product, checks })
+    }
+
     return lookup
   }
 
   const missingEnglish = missingItems.filter((item) => !item.isJapanese)
   const missingJapan = missingItems.filter((item) => item.isJapanese)
+  const fallbackJapanItems = []
+  productIds.forEach((id) => {
+    const collectr = productMap.get(id)
+    if (!collectr?.isJapanese) return
+    if (japanLookup.has(id)) return
+    const matchKey =
+      buildJapanItemKey(collectr.setName, collectr.cardNumber, collectr.collectrName) ||
+      buildLooseKey(collectr.setName, collectr.collectrName, collectr.cardNumber)
+    if (!matchKey) return
+    fallbackJapanItems.push({
+      setName: collectr.setName,
+      collectrName: collectr.collectrName,
+      cardNumber: collectr.cardNumber,
+      matchKey,
+    })
+  })
   const missingEnglishLookup = await matchMissingItems(
     missingEnglish,
     englishSetMap,
     'pokemon_products',
     'pokemon_sets',
+    true,
   )
-  const missingJapanLookup = await matchMissingItems(
-    missingJapan,
-    japanSetMap,
-    'pokemon_japan_products',
-    'pokemon_japan_sets',
-  )
+  const missingJapanLookup = await matchJapaneseMissingItems([
+    ...missingJapan,
+    ...fallbackJapanItems,
+  ])
 
   const results = []
 
   productIds.forEach((id) => {
     const collectr = productMap.get(id)
     const isJapanese = collectr?.isJapanese
-    const product = (isJapanese ? japanLookup : englishLookup).get(id) || null
+    let product = (isJapanese ? japanLookup : englishLookup).get(id) || null
+    const collectrSet = collectr.setName || null
+    let japaneseChecks = null
+    if (isJapanese) {
+      if (!product) {
+        const matchKey =
+          buildJapanItemKey(
+            collectrSet,
+            collectr?.cardNumber ?? null,
+            collectr?.collectrName ?? null,
+          ) ||
+          buildLooseKey(collectrSet, collectr?.collectrName, collectr?.cardNumber)
+        const fallback = matchKey ? missingJapanLookup.get(matchKey) || null : null
+        if (fallback?.product) {
+          product = fallback.product
+          const embeddedFallback = product?.pokemon_japan_sets ?? null
+          const setFallback = Array.isArray(embeddedFallback)
+            ? embeddedFallback[0] ?? null
+            : embeddedFallback ?? null
+          const fallbackSetName = setFallback?.name ?? null
+          const fallbackSetOther = setFallback?.name_other ?? null
+          japaneseChecks = fallback.checks ?? null
+          if (!japaneseChecks) {
+            japaneseChecks = buildJapanChecksFromProduct({
+              collectrSet,
+              collectrNumber: collectr?.cardNumber ?? null,
+              collectrName: collectr?.collectrName ?? null,
+              productName: product?.name ?? null,
+              productSet: fallbackSetName,
+              productSetOther: fallbackSetOther,
+              productNumber: product?.card_number ?? null,
+            })
+          }
+        }
+      }
+
+      if (!japaneseChecks) {
+        const embeddedCurrent = product?.pokemon_japan_sets ?? null
+        const setCurrent = Array.isArray(embeddedCurrent)
+          ? embeddedCurrent[0] ?? null
+          : embeddedCurrent ?? null
+        const currentSetName = setCurrent?.name ?? null
+        const currentSetOther = setCurrent?.name_other ?? null
+        japaneseChecks = buildJapanChecksFromProduct({
+          collectrSet,
+          collectrNumber: collectr?.cardNumber ?? null,
+          collectrName: collectr?.collectrName ?? null,
+          productName: product?.name ?? null,
+          productSet: currentSetName,
+          productSetOther: currentSetOther,
+          productNumber: product?.card_number ?? null,
+        })
+      }
+    }
     const embedded = isJapanese ? product?.pokemon_japan_sets : product?.pokemon_sets
     const setEmbed = Array.isArray(embedded) ? embedded[0] ?? null : embedded ?? null
-    const collectrSet = collectr.setName || null
     const productSet = setEmbed?.name ?? null
-    const normalizedCollectr = collectrSet ? normalizeName(collectrSet) : null
-    const normalizedProduct = productSet ? normalizeName(productSet) : null
-    const normalizedProductStripped = productSet
-      ? normalizeName(stripSetPrefix(productSet))
-      : null
-    const setMatch =
-      normalizedCollectr &&
-      (normalizedCollectr === normalizedProduct ||
-        normalizedCollectr === normalizedProductStripped)
     results.push({
       tcg_product_id: id,
       quantity: collectr.quantity,
@@ -1022,7 +1532,7 @@ export async function runCollectrImport({
       rarity: product?.rarity ?? null,
       image_url: product?.image_url ?? null,
       market_price: product?.market_price ?? null,
-      english_match: collectr.englishMatch || setMatch || false,
+      japanese_checks: japaneseChecks,
     })
   })
 
@@ -1031,25 +1541,30 @@ export async function runCollectrImport({
     const lookup = isJapanese ? missingJapanLookup : missingEnglishLookup
     const matchKey =
       collectr.matchKey ||
-      buildMatchKey(
-        collectr.setName,
-        collectr.collectrName,
-        collectr.cardNumber,
-      )
-    const product = matchKey ? lookup.get(matchKey) || null : null
+      (isJapanese
+        ? buildJapanItemKey(
+            collectr.setName,
+            collectr.cardNumber,
+            collectr.collectrName,
+          )
+        : buildMatchKey(
+            collectr.setName,
+            collectr.collectrName,
+            collectr.cardNumber,
+          ))
+    const matchInfo = isJapanese && matchKey ? lookup.get(matchKey) || null : null
+    const product = isJapanese
+      ? matchInfo?.product || null
+      : matchKey
+        ? lookup.get(matchKey) || null
+        : null
     const embedded = isJapanese ? product?.pokemon_japan_sets : product?.pokemon_sets
     const setEmbed = Array.isArray(embedded) ? embedded[0] ?? null : embedded ?? null
     const collectrSet = collectr.setName || null
     const productSet = setEmbed?.name ?? null
-    const normalizedCollectr = collectrSet ? normalizeName(collectrSet) : null
-    const normalizedProduct = productSet ? normalizeName(productSet) : null
-    const normalizedProductStripped = productSet
-      ? normalizeName(stripSetPrefix(productSet))
+    const japaneseChecks = isJapanese
+      ? matchInfo?.checks ?? collectr?.japaneseChecks ?? null
       : null
-    const setMatch =
-      normalizedCollectr &&
-      (normalizedCollectr === normalizedProduct ||
-        normalizedCollectr === normalizedProductStripped)
     results.push({
       tcg_product_id: product?.tcg_product_id ?? null,
       quantity: collectr.quantity,
@@ -1065,17 +1580,60 @@ export async function runCollectrImport({
       rarity: product?.rarity ?? collectr.rarity ?? null,
       image_url: product?.image_url ?? null,
       market_price: product?.market_price ?? null,
-      english_match: collectr.englishMatch || setMatch || false,
+      japanese_checks: japaneseChecks,
     })
   })
+
+  let cardNumberLookup = htmlCardNumberLookup
+  if (
+    (!cardNumberLookup || !cardNumberLookup.size) &&
+    results.some((row) => !row.card_number)
+  ) {
+    try {
+      const response = await fetch(parsedUrl.toString(), {
+        headers: { 'user-agent': 'CardLobby Collectr Importer' },
+      })
+      if (response.ok) {
+        const html = await response.text()
+        const extracted = extractCollectrItemsFromHtml(html)
+        if (extracted.items.length) {
+          const lookup = new Map()
+          extracted.items.forEach((item) => {
+            const key = buildNameSetKey(item.catalog_group, item.product_name)
+            const number = item.card_number
+            if (key && number && !lookup.has(key)) lookup.set(key, number)
+          })
+          if (lookup.size) cardNumberLookup = lookup
+        }
+      }
+    } catch {
+      // ignore html fill errors
+    }
+  }
+
+  if (cardNumberLookup && cardNumberLookup.size) {
+    results.forEach((row) => {
+      if (row.card_number) return
+      const key = buildNameSetKey(
+        row.collectr_set || row.set,
+        row.collectr_name || row.name,
+      )
+      const number = key ? cardNumberLookup.get(key) : null
+      if (number) row.card_number = number
+    })
+  }
 
   const summary = {
     totalCollectr,
     parsedProducts: productIds.length + missingItems.length,
     matchedProducts: results.filter((r) => r.matched).length,
     skippedGraded,
-    skippedNonEnglish,
   }
 
   return { summary, results }
 }
+
+
+
+
+

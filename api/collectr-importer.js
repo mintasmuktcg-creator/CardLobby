@@ -25,13 +25,6 @@ export default async function handler(req, res) {
     return
   }
 
-  const includeNonEnglishRaw = Array.isArray(req.query?.includeNonEnglish)
-    ? req.query.includeNonEnglish[0]
-    : req.query?.includeNonEnglish
-  const includeNonEnglish = ['1', 'true', 'yes', 'on'].includes(
-    String(includeNonEnglishRaw || '').toLowerCase(),
-  )
-
   const formatError = (err) => {
     if (err === null || err === undefined) return 'Unknown error'
     if (typeof err === 'string') return err
@@ -72,7 +65,6 @@ export default async function handler(req, res) {
     const sanitizedUrl = String(urlParam || '').trim().replace(/\\+$/, '')
     const payload = await runCollectrImport({
       url: sanitizedUrl,
-      includeNonEnglish,
       supabaseUrl: SUPABASE_URL,
       supabaseKey: SUPABASE_KEY,
     })

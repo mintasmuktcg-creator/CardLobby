@@ -28,11 +28,9 @@ const getArg = (flag) => {
 }
 
 const url = getArg('--url') || getArg('-u')
-const includeNonEnglish = args.includes('--include-non-english')
-
 if (!url) {
   console.error(
-    'Usage: node scripts/collectr-importer.mjs --url <app.getcollectr.com/showcase/profile/...> [--include-non-english]',
+    'Usage: node scripts/collectr-importer.mjs --url <app.getcollectr.com/showcase/profile/...>',
   )
   process.exit(1)
 }
@@ -40,7 +38,6 @@ if (!url) {
 const run = async () => {
   const { summary, results } = await runCollectrImport({
     url,
-    includeNonEnglish,
     supabaseUrl: SUPABASE_URL,
     supabaseKey: SUPABASE_KEY,
   })
@@ -50,9 +47,7 @@ const run = async () => {
   console.log('')
   console.table(results.slice(0, 50))
   if (results.length > 50) {
-    console.log(
-      `Showing 50/${results.length} rows. Add --include-non-english to disable filtering.`,
-    )
+    console.log(`Showing 50/${results.length} rows.`)
   }
 }
 

@@ -111,8 +111,18 @@ type CardRow = {
 }
 
 function formatPrice(value: number | null | undefined) {
-  if (value === undefined || value === null || Number.isNaN(value)) return '—'
+  if (value === undefined || value === null || Number.isNaN(value)) return '-'
   return `$${value.toFixed(2)}`
+}
+
+function formatCheck(value: boolean | null | undefined) {
+  if (value === null || value === undefined) return '[-]'
+  return value ? '[x]' : '[ ]'
+}
+
+function getCheckClass(value: boolean | null | undefined) {
+  if (value === null || value === undefined) return 'muted'
+  return value ? 'success' : 'warning'
 }
 
 function parseCardNumber(extNumber?: string | number | null): number | null {
@@ -208,7 +218,6 @@ type CollectrImportSummary = {
   parsedProducts: number
   matchedProducts: number
   skippedGraded: number
-  skippedNonEnglish: number
 }
 
 type CollectrImportResult = {
@@ -226,7 +235,11 @@ type CollectrImportResult = {
   rarity: string | null
   image_url?: string | null
   market_price?: number | null
-  english_match?: boolean
+  japanese_checks?: {
+    set_match: boolean
+    card_number_match: boolean
+    name_match: boolean | null
+  } | null
 }
 
 type SetInfo = {
@@ -1714,10 +1727,6 @@ function CollectrImporter() {
               <div className="pill muted">Skipped graded</div>
               <strong>{summary.skippedGraded}</strong>
             </div>
-            <div className="summary-card">
-              <div className="pill muted">Skipped non-English</div>
-              <strong>{summary.skippedNonEnglish}</strong>
-            </div>
           </div>
         )}
       </div>
@@ -1738,6 +1747,7 @@ function CollectrImporter() {
             const displayName = row.name || row.collectr_name || 'Unknown product'
             const displaySet = row.set || row.collectr_set || 'Unknown set'
             const imageUrl = row.image_url || row.collectr_image_url || null
+            const japaneseChecks = row.japanese_checks ?? null
             const key = row.tcg_product_id
               ? `${row.tcg_product_id}-${row.collectr_set ?? 'set'}`
               : `${index}-${row.collectr_set ?? 'set'}`
@@ -1753,7 +1763,7 @@ function CollectrImporter() {
                     <div className="img-placeholder">No image</div>
                   )}
                   <div className="import-card-badge">
-                    <span className="pill muted">Qty {row.quantity}</span>
+                    <span className="pill qty-badge">Qty {row.quantity}</span>
                   </div>
                 </div>
                 <div className="import-card-body">
@@ -1762,23 +1772,37 @@ function CollectrImporter() {
                     <span>{displaySet}</span>
                   </div>
                   <div className="import-card-meta">
-                    <span>#{row.card_number || 'â€”'}</span>
-                    <span className="dot">â€¢</span>
-                    <span>{row.rarity || 'â€”'}</span>
+                    <span>#{row.card_number || '-'}</span>
+                    <span className="dot">|</span>
+                    <span>{row.rarity || '-'}</span>
                   </div>
                   <div className="import-card-meta">
-                    <span>{row.product_type || 'â€”'}</span>
-                    <span className="dot">â€¢</span>
+                    <span>{row.product_type || '-'}</span>
+                    <span className="dot">|</span>
                     <span>{formatPrice(row.market_price)}</span>
                   </div>
                   <div className="import-card-meta">
                     <span className={`pill ${row.matched ? 'success' : 'warning'}`}>
                       {row.matched ? 'Matched' : 'Unmatched'}
                     </span>
-                    {row.english_match ? (
-                      <span className="pill muted">Set matched</span>
-                    ) : null}
                   </div>
+                  {japaneseChecks && (
+                    <div className="import-card-meta">
+                      <span className={`pill ${getCheckClass(japaneseChecks.set_match)}`}>
+                        Set {formatCheck(japaneseChecks.set_match)}
+                      </span>
+                      <span
+                        className={`pill ${getCheckClass(
+                          japaneseChecks.card_number_match,
+                        )}`}
+                      >
+                        Number {formatCheck(japaneseChecks.card_number_match)}
+                      </span>
+                      <span className={`pill ${getCheckClass(japaneseChecks.name_match)}`}>
+                        Name {formatCheck(japaneseChecks.name_match)}
+                      </span>
+                    </div>
+                  )}
                 </div>
               </article>
             )
@@ -1788,3 +1812,4 @@ function CollectrImporter() {
     </section>
   )
 }
+
