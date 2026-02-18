@@ -560,10 +560,10 @@ const getCollectrProfileId = (parsedUrl) => {
 
 const fetchCollectrItemsViaApi = async (profileId) => {
   if (!profileId) return []
-  const rawLimit = Number(process.env.COLLECTR_API_LIMIT || 60)
+  const rawLimit = Number(process.env.COLLECTR_API_LIMIT || 30)
   const limit = Number.isFinite(rawLimit)
-    ? Math.min(Math.max(rawLimit, 10), 100)
-    : 60
+    ? Math.min(Math.max(rawLimit, 10), 30)
+    : 30
   const rawMaxPages = Number(process.env.COLLECTR_API_MAX_PAGES || 200)
   const maxPages = Number.isFinite(rawMaxPages)
     ? Math.min(Math.max(rawMaxPages, 1), 500)
@@ -607,8 +607,6 @@ const fetchCollectrItemsViaApi = async (profileId) => {
     if (!Array.isArray(products) || products.length === 0) break
 
     items.push(...products)
-
-    if (products.length < limit) break
     offset += limit
   }
 
