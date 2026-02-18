@@ -613,6 +613,55 @@ const fetchCollectrItemsViaApi = async (profileId) => {
   return items
 }
 
+const fetchCollectrItemsViaPageApi = async (page, profileId) => {
+  if (!page || !profileId) return []
+  try {
+    return await page.evaluate(async (profileId) => {
+      const limit = 30
+      const maxPages = 200
+      const items = []
+      let offset = 0
+
+      const getAnonUsername = () => {
+        try {
+          const token = JSON.parse(localStorage.getItem('collectrToken') || '{}')
+          if (token?.username) return token.username
+        } catch {
+          // ignore parse errors
+        }
+        return '00000000-0000-0000-0000-000000000000'
+      }
+
+      const username = getAnonUsername()
+      for (let pageIndex = 0; pageIndex < maxPages; pageIndex += 1) {
+        const params = new URLSearchParams({
+          offset: String(offset),
+          limit: String(limit),
+          unstackedView: 'true',
+          username,
+        })
+        const url = `https://api-v2.getcollectr.com/data/showcase/${profileId}?${params.toString()}`
+        const response = await fetch(url, { credentials: 'include' })
+        if (!response.ok) break
+        const payload = await response.json()
+        const products = Array.isArray(payload?.products)
+          ? payload.products
+          : Array.isArray(payload?.data?.products)
+            ? payload.data.products
+            : Array.isArray(payload?.data?.data?.products)
+              ? payload.data.data.products
+              : []
+        if (!Array.isArray(products) || products.length === 0) break
+        items.push(...products)
+        offset += limit
+      }
+      return items
+    }, profileId)
+  } catch {
+    return []
+  }
+}
+
 const fetchCollectrItemsViaBrowser = async (url, profileId) => {
   const puppeteer = await loadPuppeteer()
   if (!puppeteer) {
@@ -665,9 +714,11 @@ const fetchCollectrItemsViaBrowser = async (url, profileId) => {
 
     const collected = []
     const seenOffsets = new Set()
+    let allowNetworkCollect = true
 
     page.on('response', async (response) => {
       try {
+        if (!allowNetworkCollect) return
         const responseUrl = response.url()
         if (!responseUrl.includes('/data/showcase/')) return
         if (profileId && !responseUrl.includes(profileId)) return
@@ -696,10 +747,21 @@ const fetchCollectrItemsViaBrowser = async (url, profileId) => {
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 })
     await delay(2000)
 
+    let pageApiItems = []
+    if (profileId) {
+      pageApiItems = await fetchCollectrItemsViaPageApi(page, profileId)
+      if (pageApiItems.length) {
+        allowNetworkCollect = false
+        collected.length = 0
+        collected.push(...pageApiItems)
+      }
+    }
+
     const scrollEnv = (process.env.COLLECTR_SCROLL || '').toLowerCase()
-    const enableScroll = !(
+    let enableScroll = !(
       scrollEnv === '0' || scrollEnv === 'false' || scrollEnv === 'no'
     )
+    if (pageApiItems.length) enableScroll = false
     const maxScrolls = 60
     const scrollDelayMs = 1200
     const maxIdleRounds = 4
