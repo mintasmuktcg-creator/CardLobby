@@ -712,13 +712,11 @@ const fetchCollectrItemsViaBrowser = async (url, profileId) => {
       request.continue()
     })
 
-    const collected = []
+    let collected = []
     const seenOffsets = new Set()
-    let allowNetworkCollect = true
 
     page.on('response', async (response) => {
       try {
-        if (!allowNetworkCollect) return
         const responseUrl = response.url()
         if (!responseUrl.includes('/data/showcase/')) return
         if (profileId && !responseUrl.includes(profileId)) return
@@ -751,9 +749,7 @@ const fetchCollectrItemsViaBrowser = async (url, profileId) => {
     if (profileId) {
       pageApiItems = await fetchCollectrItemsViaPageApi(page, profileId)
       if (pageApiItems.length) {
-        allowNetworkCollect = false
-        collected.length = 0
-        collected.push(...pageApiItems)
+        mergeCollectrItems(collected, pageApiItems)
       }
     }
 
@@ -761,7 +757,7 @@ const fetchCollectrItemsViaBrowser = async (url, profileId) => {
     let enableScroll = !(
       scrollEnv === '0' || scrollEnv === 'false' || scrollEnv === 'no'
     )
-    if (pageApiItems.length) enableScroll = false
+    if (pageApiItems.length && pageApiItems.length < 30) enableScroll = false
     const maxScrolls = 60
     const scrollDelayMs = 1200
     const maxIdleRounds = 4
@@ -1012,9 +1008,13 @@ const fetchCollectrItemsViaBrowser = async (url, profileId) => {
       mergeCollectrItems(collected, extracted.items)
     }
 
-    if (collected.length) return collected
+    const deduped = []
+    if (collected.length) {
+      mergeCollectrItems(deduped, collected)
+    }
+    if (deduped.length) return deduped
     if (extracted.items.length) return extracted.items
-    return collected
+    return deduped
   } finally {
     await browser.close()
   }
