@@ -1,8 +1,12 @@
 import { useEffect, useLayoutEffect, useMemo, useState } from 'react'
 import Papa from 'papaparse'
-import setCsv from '../CardCSVs/MEAscendedHeroesProductsAndPrices.csv?raw'
 import { supabase } from './lib/supabaseClient'
 import './App.css'
+
+const CSV_FALLBACK_URL = new URL(
+  '../CardCSVs/MEAscendedHeroesProductsAndPrices.csv',
+  import.meta.url,
+).toString()
 
 const CSV_FALLBACK_SET_TITLE = 'Mega Evolution — Ascended Heroes'
 type CatalogKey = 'pokemon' | 'pokemon_japan'
@@ -341,7 +345,7 @@ function App() {
     const hasSupabaseEnv =
       !!import.meta.env.VITE_SUPABASE_URL && !!import.meta.env.VITE_SUPABASE_ANON_KEY
 
-    const fromCsvFallback = () => {
+    const fromCsvFallback = async () => {
       if (catalog !== 'pokemon') {
         setSets([])
         setSelectedSetId('all')
@@ -349,28 +353,37 @@ function App() {
         return
       }
       setLoading(true)
-      Papa.parse<CardRow>(setCsv, {
-        header: true,
-        skipEmptyLines: true,
-        dynamicTyping: true,
-        complete: (result) => {
-          const parsed = (result.data || []).filter(
-            (row: CardRow) => !!row.productId,
-          )
-          hydrateCards(parsed, setCards, setAvailableSubtypes, setSubtypeFilters)
-          setSets([{ id: 'csv-set', name: CSV_FALLBACK_SET_TITLE }])
-          setSelectedSetId('csv-set')
-          setLoading(false)
-        },
-        error: () => {
-          setLoading(false)
-        },
-      })
+      try {
+        const response = await fetch(CSV_FALLBACK_URL)
+        if (!response.ok) {
+          throw new Error(`Failed to fetch fallback CSV (${response.status})`)
+        }
+        const csvText = await response.text()
+        Papa.parse<CardRow>(csvText, {
+          header: true,
+          skipEmptyLines: true,
+          dynamicTyping: true,
+          complete: (result) => {
+            const parsed = (result.data || []).filter(
+              (row: CardRow) => !!row.productId,
+            )
+            hydrateCards(parsed, setCards, setAvailableSubtypes, setSubtypeFilters)
+            setSets([{ id: 'csv-set', name: CSV_FALLBACK_SET_TITLE }])
+            setSelectedSetId('csv-set')
+            setLoading(false)
+          },
+          error: () => {
+            setLoading(false)
+          },
+        })
+      } catch {
+        setLoading(false)
+      }
     }
 
     const fromSupabase = async () => {
       if (!hasSupabaseEnv) {
-        fromCsvFallback()
+        void fromCsvFallback()
         return
       }
       setLoading(true)
@@ -382,7 +395,7 @@ function App() {
         .order('name', { ascending: true })
 
       if (error) {
-        fromCsvFallback()
+        void fromCsvFallback()
         return
       }
 

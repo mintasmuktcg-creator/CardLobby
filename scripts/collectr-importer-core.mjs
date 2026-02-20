@@ -14,6 +14,33 @@ const COLLECTR_ANON_USERNAME = '00000000-0000-0000-0000-000000000000'
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
+const buildCollectrApiHeaders = () => {
+  const headers = {
+    'user-agent': process.env.COLLECTR_USER_AGENT || 'CardLobby Collectr Importer',
+    accept: process.env.COLLECTR_ACCEPT || 'application/json',
+  }
+  const acceptLanguage = process.env.COLLECTR_ACCEPT_LANGUAGE
+  if (acceptLanguage) headers['accept-language'] = acceptLanguage
+  const authToken = process.env.COLLECTR_AUTH_TOKEN || process.env.COLLECTR_AUTHORIZATION
+  if (authToken) headers.authorization = authToken
+  const origin = process.env.COLLECTR_ORIGIN
+  if (origin) headers.origin = origin
+  const referer = process.env.COLLECTR_REFERER
+  if (referer) headers.referer = referer
+  return headers
+}
+
+const buildCollectrPageHeaders = () => {
+  const headers = {}
+  const accept = process.env.COLLECTR_ACCEPT
+  if (accept) headers.accept = accept
+  const acceptLanguage = process.env.COLLECTR_ACCEPT_LANGUAGE
+  if (acceptLanguage) headers['accept-language'] = acceptLanguage
+  const authToken = process.env.COLLECTR_AUTH_TOKEN || process.env.COLLECTR_AUTHORIZATION
+  if (authToken) headers.authorization = authToken
+  return headers
+}
+
 const decodeEscapes = (value) => {
   if (!value) return value
   return value
@@ -69,10 +96,6 @@ const stripJpTag = (value) => {
 
 const normalizeCardNameForMatch = (value) => normalizeName(stripJpTag(value))
 
-const normalizeRarity = (value) => {
-  if (!value) return null
-  return String(value).toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim() || null
-}
 
 const normalizeCardNumberForMatch = (value) => {
   if (!value) return null
@@ -261,14 +284,6 @@ const getSetStatus = (setName, englishSetMap, japanSetMap) => {
   return { isJapanese, match }
 }
 
-const stripSetPrefix = (name) => {
-  if (!name) return name
-  const colonMatch = name.match(/^([A-Z0-9]{2,6})\\s*:\\s*(.+)$/i)
-  if (colonMatch) return colonMatch[2]
-  const dashMatch = name.match(/^([A-Z0-9]{2,6})\\s*-\\s*(.+)$/i)
-  if (dashMatch) return dashMatch[2]
-  return name
-}
 
 const chunk = (arr, size) => {
   const out = []
@@ -569,7 +584,7 @@ const fetchCollectrItemsViaApi = async (profileId) => {
     ? Math.min(Math.max(rawMaxPages, 1), 500)
     : 200
   const anonUsername = process.env.COLLECTR_ANON_USERNAME || COLLECTR_ANON_USERNAME
-  const userAgent = 'CardLobby Collectr Importer'
+  const headers = buildCollectrApiHeaders()
 
   let offset = 0
   const items = []
@@ -583,12 +598,7 @@ const fetchCollectrItemsViaApi = async (profileId) => {
 
     const response = await fetch(
       `${COLLECTR_API_BASE}/data/showcase/${profileId}?${params.toString()}`,
-      {
-        headers: {
-          'user-agent': userAgent,
-          accept: 'application/json',
-        },
-      },
+      { headers },
     )
 
     if (!response.ok) {
@@ -613,10 +623,15 @@ const fetchCollectrItemsViaApi = async (profileId) => {
   return items
 }
 
-const fetchCollectrItemsViaPageApi = async (page, profileId) => {
+const fetchCollectrItemsViaPageApi = async (
+  page,
+  profileId,
+  headerOverrides = {},
+  forcedUsername = null,
+) => {
   if (!page || !profileId) return []
   try {
-    return await page.evaluate(async (profileId) => {
+    return await page.evaluate(async (profileId, headerOverrides, forcedUsername) => {
       const limit = 30
       const maxPages = 200
       const items = []
@@ -632,7 +647,7 @@ const fetchCollectrItemsViaPageApi = async (page, profileId) => {
         return '00000000-0000-0000-0000-000000000000'
       }
 
-      const username = getAnonUsername()
+      const username = forcedUsername || getAnonUsername()
       for (let pageIndex = 0; pageIndex < maxPages; pageIndex += 1) {
         const params = new URLSearchParams({
           offset: String(offset),
@@ -641,7 +656,10 @@ const fetchCollectrItemsViaPageApi = async (page, profileId) => {
           username,
         })
         const url = `https://api-v2.getcollectr.com/data/showcase/${profileId}?${params.toString()}`
-        const response = await fetch(url, { credentials: 'include' })
+        const response = await fetch(url, {
+          credentials: 'include',
+          headers: headerOverrides || undefined,
+        })
         if (!response.ok) break
         const payload = await response.json()
         const products = Array.isArray(payload?.products)
@@ -656,7 +674,7 @@ const fetchCollectrItemsViaPageApi = async (page, profileId) => {
         offset += limit
       }
       return items
-    }, profileId)
+    }, profileId, headerOverrides, forcedUsername)
   } catch {
     return []
   }
@@ -747,7 +765,15 @@ const fetchCollectrItemsViaBrowser = async (url, profileId) => {
 
     let pageApiItems = []
     if (profileId) {
-      pageApiItems = await fetchCollectrItemsViaPageApi(page, profileId)
+      const pageHeaders = buildCollectrPageHeaders()
+      const forcedUsername =
+        process.env.COLLECTR_USERNAME || process.env.COLLECTR_ANON_USERNAME || null
+      pageApiItems = await fetchCollectrItemsViaPageApi(
+        page,
+        profileId,
+        pageHeaders,
+        forcedUsername,
+      )
       if (pageApiItems.length) {
         mergeCollectrItems(collected, pageApiItems)
       }
@@ -1125,7 +1151,7 @@ export async function runCollectrImport({ url, supabaseUrl, supabaseKey }) {
     if (missingCardNumbers) {
       try {
         const response = await fetch(parsedUrl.toString(), {
-          headers: { 'user-agent': 'CardLobby Collectr Importer' },
+          headers: buildCollectrApiHeaders(),
         })
         if (response.ok) {
           const html = await response.text()
@@ -1153,9 +1179,7 @@ export async function runCollectrImport({ url, supabaseUrl, supabaseKey }) {
 
   if (!collectrItems.length) {
     const response = await fetch(parsedUrl.toString(), {
-      headers: {
-        'user-agent': 'CardLobby Collectr Importer',
-      },
+      headers: buildCollectrApiHeaders(),
     })
     if (!response.ok) {
       throw new Error(`Failed to fetch ${response.status}`)
@@ -1651,7 +1675,7 @@ export async function runCollectrImport({ url, supabaseUrl, supabaseKey }) {
   ) {
     try {
       const response = await fetch(parsedUrl.toString(), {
-        headers: { 'user-agent': 'CardLobby Collectr Importer' },
+        headers: buildCollectrApiHeaders(),
       })
       if (response.ok) {
         const html = await response.text()
