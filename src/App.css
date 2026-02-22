@@ -512,6 +512,20 @@
   color: #f2ecff;
 }
 
+.importer-row select {
+  min-width: 220px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.06);
+  color: #f2ecff;
+}
+
+.importer-row select option {
+  background: #ffffff;
+  color: #111111;
+}
+
 .importer-toggle {
   align-self: flex-start;
 }

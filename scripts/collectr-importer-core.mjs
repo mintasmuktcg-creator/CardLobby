@@ -368,20 +368,24 @@ const mergeCollectrItems = (baseItems, domItems) => {
   const byFallbackKey = new Map()
 
   baseItems.forEach((item) => {
+    const collectionKey = getCollectionKeyFromItem(item)
     const id = item?.product_id ?? item?.productId ?? item?.tcg_product_id ?? null
-    if (id) byId.set(String(id), item)
+    if (id) byId.set(`${collectionKey}|${String(id)}`, item)
     const key = getLooseKeyFromItem(item)
-    if (key && !byLooseKey.has(key)) byLooseKey.set(key, item)
+    const keyedLoose = key ? `${collectionKey}|${key}` : null
+    if (keyedLoose && !byLooseKey.has(keyedLoose)) byLooseKey.set(keyedLoose, item)
     const fallbackKey = getFallbackKeyFromItem(item)
-    if (fallbackKey && !byFallbackKey.has(fallbackKey)) {
-      byFallbackKey.set(fallbackKey, item)
+    const keyedFallback = fallbackKey ? `${collectionKey}|${fallbackKey}` : null
+    if (keyedFallback && !byFallbackKey.has(keyedFallback)) {
+      byFallbackKey.set(keyedFallback, item)
     }
   })
 
   domItems.forEach((domItem) => {
+    const collectionKey = getCollectionKeyFromItem(domItem)
     const id = domItem?.product_id ?? domItem?.productId ?? null
-    if (id && byId.has(String(id))) {
-      const target = byId.get(String(id))
+    if (id && byId.has(`${collectionKey}|${String(id)}`)) {
+      const target = byId.get(`${collectionKey}|${String(id)}`)
       Object.entries(domItem).forEach(([key, value]) => {
         if (value === null || value === undefined || value === '') return
         if (target[key] === null || target[key] === undefined || target[key] === '') {
@@ -392,8 +396,9 @@ const mergeCollectrItems = (baseItems, domItems) => {
     }
 
     const key = getLooseKeyFromItem(domItem)
-    if (key && byLooseKey.has(key)) {
-      const target = byLooseKey.get(key)
+    const keyedLoose = key ? `${collectionKey}|${key}` : null
+    if (keyedLoose && byLooseKey.has(keyedLoose)) {
+      const target = byLooseKey.get(keyedLoose)
       Object.entries(domItem).forEach(([k, value]) => {
         if (value === null || value === undefined || value === '') return
         if (target[k] === null || target[k] === undefined || target[k] === '') {
@@ -404,8 +409,9 @@ const mergeCollectrItems = (baseItems, domItems) => {
     }
 
     const fallbackKey = getFallbackKeyFromItem(domItem)
-    if (fallbackKey && byFallbackKey.has(fallbackKey)) {
-      const target = byFallbackKey.get(fallbackKey)
+    const keyedFallback = fallbackKey ? `${collectionKey}|${fallbackKey}` : null
+    if (keyedFallback && byFallbackKey.has(keyedFallback)) {
+      const target = byFallbackKey.get(keyedFallback)
       Object.entries(domItem).forEach(([k, value]) => {
         if (value === null || value === undefined || value === '') return
         if (target[k] === null || target[k] === undefined || target[k] === '') {
@@ -416,9 +422,9 @@ const mergeCollectrItems = (baseItems, domItems) => {
     }
 
     baseItems.push(domItem)
-    if (id) byId.set(String(id), domItem)
-    if (key) byLooseKey.set(key, domItem)
-    if (fallbackKey) byFallbackKey.set(fallbackKey, domItem)
+    if (id) byId.set(`${collectionKey}|${String(id)}`, domItem)
+    if (keyedLoose) byLooseKey.set(keyedLoose, domItem)
+    if (keyedFallback) byFallbackKey.set(keyedFallback, domItem)
   })
 
   return baseItems
@@ -439,6 +445,20 @@ const normalizeCollectrItem = (item) => {
   if (!item || typeof item !== 'object') return null
   const debug = process.env.COLLECTR_DEBUG === '1'
   const debugLimit = Number(process.env.COLLECTR_DEBUG_LIMIT || 3)
+  const collectionId =
+    item.collection_id ??
+    item.collectionId ??
+    item.collectr_collection_id ??
+    item.collectrCollectionId ??
+    item.__collection_id ??
+    null
+  const collectionName =
+    item.collection_name ??
+    item.collectionName ??
+    item.collectr_collection_name ??
+    item.collectrCollectionName ??
+    item.__collection_name ??
+    null
   const idStr =
     item.product_id ??
     item.productId ??
@@ -549,6 +569,8 @@ const normalizeCollectrItem = (item) => {
     collectrName,
     collectrImageUrl: imageUrl || null,
     setName: setName || null,
+    collectionId: collectionId || null,
+    collectionName: collectionName || null,
     gradeCompany: item.grade_company ?? item.gradeCompany ?? null,
     gradeId,
     cardCondition,
@@ -567,14 +589,83 @@ const isCollectrGraded = ({ gradeCompany, gradeId, isCard }) => {
   return normalizedGrade !== '52'
 }
 
+const buildCollectionKey = (collectionId, collectionName) => {
+  if (collectionId) return `id:${collectionId}`
+  if (collectionName) {
+    const normalized = normalizeName(collectionName)
+    if (normalized) return `name:${normalized}`
+  }
+  return 'default'
+}
+
+const getCollectionKeyFromItem = (item) => {
+  if (!item || typeof item !== 'object') return 'default'
+  const collectionId =
+    item.collection_id ??
+    item.collectionId ??
+    item.collectr_collection_id ??
+    item.collectrCollectionId ??
+    item.__collection_id ??
+    null
+  const collectionName =
+    item.collection_name ??
+    item.collectionName ??
+    item.collectr_collection_name ??
+    item.collectrCollectionName ??
+    item.__collection_name ??
+    null
+  return buildCollectionKey(collectionId, collectionName)
+}
+
+const tagItemsWithCollection = (items, collection) => {
+  if (!Array.isArray(items) || !items.length) return items
+  const collectionId = collection?.id ?? null
+  const collectionName = collection?.name ?? null
+  if (!collectionId && !collectionName) return items
+  items.forEach((item) => {
+    if (!item || typeof item !== 'object') return
+    if (collectionId && !item.collection_id) item.collection_id = collectionId
+    if (collectionName && !item.collection_name) item.collection_name = collectionName
+  })
+  return items
+}
+
 const getCollectrProfileId = (parsedUrl) => {
   if (!parsedUrl) return null
   const match = parsedUrl.pathname.match(/showcase\/profile\/([^/]+)/i)
   return match ? match[1] : null
 }
 
-const fetchCollectrItemsViaApi = async (profileId) => {
-  if (!profileId) return []
+const getCollectrCollectionId = (parsedUrl) => {
+  if (!parsedUrl) return null
+  const collection = parsedUrl.searchParams.get('collection')
+  if (collection && collection.trim()) return collection.trim()
+  const idParam = parsedUrl.searchParams.get('id')
+  if (idParam && idParam.trim()) return idParam.trim()
+  return null
+}
+
+const buildCollectrQueryParams = ({
+  offset,
+  limit,
+  username,
+  collectionId,
+  filters,
+}) => {
+  const params = new URLSearchParams()
+  params.set('offset', String(offset))
+  params.set('limit', String(limit))
+  params.set('unstackedView', 'true')
+  params.set('username', username)
+  if (collectionId) params.set('id', collectionId)
+  if (filters !== null && filters !== undefined) {
+    params.set('filters', String(filters))
+  }
+  return params
+}
+
+const fetchCollectrItemsViaApi = async (profileId, collectionId, filters) => {
+  if (!profileId) return { items: [], collections: [] }
   const rawLimit = Number(process.env.COLLECTR_API_LIMIT || 30)
   const limit = Number.isFinite(rawLimit)
     ? Math.min(Math.max(rawLimit, 10), 30)
@@ -583,18 +674,24 @@ const fetchCollectrItemsViaApi = async (profileId) => {
   const maxPages = Number.isFinite(rawMaxPages)
     ? Math.min(Math.max(rawMaxPages, 1), 500)
     : 200
-  const anonUsername = process.env.COLLECTR_ANON_USERNAME || COLLECTR_ANON_USERNAME
+  const anonUsername =
+    process.env.COLLECTR_USERNAME ||
+    process.env.COLLECTR_ANON_USERNAME ||
+    COLLECTR_ANON_USERNAME
   const headers = buildCollectrApiHeaders()
 
   let offset = 0
   const items = []
+  let collections = []
 
   for (let page = 0; page < maxPages; page += 1) {
-    const params = new URLSearchParams()
-    params.set('offset', String(offset))
-    params.set('limit', String(limit))
-    params.set('unstackedView', 'true')
-    params.set('username', anonUsername)
+    const params = buildCollectrQueryParams({
+      offset,
+      limit,
+      username: anonUsername,
+      collectionId,
+      filters,
+    })
 
     const response = await fetch(
       `${COLLECTR_API_BASE}/data/showcase/${profileId}?${params.toString()}`,
@@ -613,6 +710,16 @@ const fetchCollectrItemsViaApi = async (profileId) => {
         : Array.isArray(payload?.data?.data?.products)
           ? payload.data.data.products
           : []
+    if (!page) {
+      const maybeCollections = Array.isArray(payload?.collections)
+        ? payload.collections
+        : Array.isArray(payload?.data?.collections)
+          ? payload.data.collections
+          : []
+      if (maybeCollections.length) {
+        collections = maybeCollections
+      }
+    }
 
     if (!Array.isArray(products) || products.length === 0) break
 
@@ -620,7 +727,7 @@ const fetchCollectrItemsViaApi = async (profileId) => {
     offset += limit
   }
 
-  return items
+  return { items, collections }
 }
 
 const fetchCollectrItemsViaPageApi = async (
@@ -628,10 +735,19 @@ const fetchCollectrItemsViaPageApi = async (
   profileId,
   headerOverrides = {},
   forcedUsername = null,
+  collectionId = null,
+  filters = null,
 ) => {
   if (!page || !profileId) return []
   try {
-    return await page.evaluate(async (profileId, headerOverrides, forcedUsername) => {
+    return await page.evaluate(
+      async (
+        profileId,
+        headerOverrides,
+        forcedUsername,
+        collectionId,
+        filters,
+      ) => {
       const limit = 30
       const maxPages = 200
       const items = []
@@ -649,12 +765,15 @@ const fetchCollectrItemsViaPageApi = async (
 
       const username = forcedUsername || getAnonUsername()
       for (let pageIndex = 0; pageIndex < maxPages; pageIndex += 1) {
-        const params = new URLSearchParams({
-          offset: String(offset),
-          limit: String(limit),
-          unstackedView: 'true',
-          username,
-        })
+        const params = new URLSearchParams()
+        params.set('offset', String(offset))
+        params.set('limit', String(limit))
+        params.set('unstackedView', 'true')
+        params.set('username', username)
+        if (collectionId) params.set('id', collectionId)
+        if (filters !== null && filters !== undefined) {
+          params.set('filters', String(filters))
+        }
         const url = `https://api-v2.getcollectr.com/data/showcase/${profileId}?${params.toString()}`
         const response = await fetch(url, {
           credentials: 'include',
@@ -674,13 +793,19 @@ const fetchCollectrItemsViaPageApi = async (
         offset += limit
       }
       return items
-    }, profileId, headerOverrides, forcedUsername)
+      },
+      profileId,
+      headerOverrides,
+      forcedUsername,
+      collectionId,
+      filters,
+    )
   } catch {
     return []
   }
 }
 
-const fetchCollectrItemsViaBrowser = async (url, profileId) => {
+const fetchCollectrItemsViaBrowser = async (url, profileId, collectionId) => {
   const puppeteer = await loadPuppeteer()
   if (!puppeteer) {
     throw new Error(
@@ -768,11 +893,19 @@ const fetchCollectrItemsViaBrowser = async (url, profileId) => {
       const pageHeaders = buildCollectrPageHeaders()
       const forcedUsername =
         process.env.COLLECTR_USERNAME || process.env.COLLECTR_ANON_USERNAME || null
+      const filters =
+        process.env.COLLECTR_FILTERS !== undefined
+          ? process.env.COLLECTR_FILTERS
+          : collectionId
+            ? ''
+            : null
       pageApiItems = await fetchCollectrItemsViaPageApi(
         page,
         profileId,
         pageHeaders,
         forcedUsername,
+        collectionId,
+        filters,
       )
       if (pageApiItems.length) {
         mergeCollectrItems(collected, pageApiItems)
@@ -1070,13 +1203,21 @@ export async function runCollectrImport({ url, supabaseUrl, supabaseKey }) {
     throw new Error('URL must point to a Collectr profile page.')
   }
 
+  const collectionId = getCollectrCollectionId(parsedUrl)
+  const collectionFilters =
+    process.env.COLLECTR_FILTERS !== undefined
+      ? process.env.COLLECTR_FILTERS
+      : collectionId
+        ? ''
+        : null
+
   const supabase = createClient(supabaseUrl, supabaseKey, {
     auth: { persistSession: false },
   })
 
   const { data: englishSetRows, error: englishSetErr } = await supabase
     .from('pokemon_sets')
-    .select('id, name')
+    .select('id, name, name_other')
   if (englishSetErr) throw englishSetErr
 
   const { data: japanSetRows, error: japanSetErr } = await supabase
@@ -1108,12 +1249,37 @@ export async function runCollectrImport({ url, supabaseUrl, supabaseKey }) {
   const japanSetMap = buildSetMap(japanSetRows || [])
 
   let collectrItems = []
+  let collections = []
   let totalCollectr = 0
   let htmlCardNumberLookup = null
 
   if (process.env.COLLECTR_USE_API !== '0') {
     try {
-      collectrItems = await fetchCollectrItemsViaApi(profileId)
+      const initialResult = await fetchCollectrItemsViaApi(
+        profileId,
+        collectionId,
+        collectionFilters,
+      )
+      collections = Array.isArray(initialResult.collections)
+        ? initialResult.collections
+        : []
+      if (collections.length) {
+        const loopFilters =
+          process.env.COLLECTR_FILTERS !== undefined ? process.env.COLLECTR_FILTERS : ''
+        collectrItems = []
+        for (const collection of collections) {
+          const nextResult = await fetchCollectrItemsViaApi(
+            profileId,
+            collection.id,
+            loopFilters,
+          )
+          const items = nextResult.items || []
+          tagItemsWithCollection(items, collection)
+          collectrItems.push(...items)
+        }
+      } else {
+        collectrItems = initialResult.items || []
+      }
       totalCollectr = collectrItems.length
     } catch {
       collectrItems = []
@@ -1126,6 +1292,7 @@ export async function runCollectrImport({ url, supabaseUrl, supabaseKey }) {
       collectrItems = await fetchCollectrItemsViaBrowser(
         parsedUrl.toString(),
         profileId,
+        collectionId,
       )
       totalCollectr = collectrItems.length
     } catch (err) {
@@ -1222,12 +1389,15 @@ export async function runCollectrImport({ url, supabaseUrl, supabaseKey }) {
       collectrName,
       collectrImageUrl,
       setName,
+      collectionId: itemCollectionId,
+      collectionName: itemCollectionName,
       gradeCompany,
       gradeId,
       isCard,
       cardNumber,
       rarity,
     } = normalized
+    const collectionKey = buildCollectionKey(itemCollectionId, itemCollectionName)
 
     const setStatus = getSetStatus(setName, englishSetMap, japanSetMap)
     if (setStatus.isJapanese) {
@@ -1245,6 +1415,8 @@ export async function runCollectrImport({ url, supabaseUrl, supabaseKey }) {
             gradeCompany,
             gradeId,
             isCard,
+            collectionId: itemCollectionId,
+            collectionName: itemCollectionName,
           },
           null,
           2,
@@ -1266,7 +1438,8 @@ export async function runCollectrImport({ url, supabaseUrl, supabaseKey }) {
         (setStatus.isJapanese
           ? buildJapanItemKey(setName, cardNumber, null)
           : buildLooseKey(setName, collectrName, cardNumber))
-      const current = missingMap.get(bucketKey) || {
+      const keyedBucket = `${collectionKey}|${bucketKey}`
+      const current = missingMap.get(keyedBucket) || {
         productId: null,
         quantity: 0,
         setName,
@@ -1276,6 +1449,9 @@ export async function runCollectrImport({ url, supabaseUrl, supabaseKey }) {
         cardNumber: null,
         rarity: null,
         matchKey,
+        collectionId: itemCollectionId || null,
+        collectionName: itemCollectionName || null,
+        collectionKey,
       }
       current.quantity += quantity
       if (!current.setName && setName) current.setName = setName
@@ -1287,11 +1463,12 @@ export async function runCollectrImport({ url, supabaseUrl, supabaseKey }) {
       if (!current.cardNumber && cardNumber) current.cardNumber = cardNumber
       if (!current.rarity && rarity) current.rarity = rarity
       current.matchKey = current.matchKey || matchKey
-      missingMap.set(bucketKey, current)
+      missingMap.set(keyedBucket, current)
       continue
     }
 
-    const current = productMap.get(productId) || {
+    const productKey = `${collectionKey}|${productId}`
+    const current = productMap.get(productKey) || {
       productId,
       quantity: 0,
       setName,
@@ -1300,6 +1477,9 @@ export async function runCollectrImport({ url, supabaseUrl, supabaseKey }) {
       collectrImageUrl: null,
       cardNumber: null,
       rarity: null,
+      collectionId: itemCollectionId || null,
+      collectionName: itemCollectionName || null,
+      collectionKey,
     }
     current.quantity += quantity
     if (!current.setName && setName) current.setName = setName
@@ -1310,21 +1490,24 @@ export async function runCollectrImport({ url, supabaseUrl, supabaseKey }) {
     }
     if (!current.cardNumber && cardNumber) current.cardNumber = cardNumber
     if (!current.rarity && rarity) current.rarity = rarity
-    productMap.set(productId, current)
+    productMap.set(productKey, current)
   }
 
-  const productIds = Array.from(productMap.keys())
+  const productEntries = Array.from(productMap.values())
   const missingItems = Array.from(missingMap.values())
-  const englishIds = []
-  const japanIds = []
-  for (const id of productIds) {
-    const entry = productMap.get(id)
+  const englishIdSet = new Set()
+  const japanIdSet = new Set()
+  for (const entry of productEntries) {
+    if (!entry?.productId) continue
     if (entry?.isJapanese) {
-      japanIds.push(id)
+      japanIdSet.add(entry.productId)
     } else {
-      englishIds.push(id)
+      englishIdSet.add(entry.productId)
     }
   }
+  const englishIds = Array.from(englishIdSet)
+  const japanIds = Array.from(japanIdSet)
+  const productIds = Array.from(new Set([...englishIds, ...japanIds]))
 
   const getEmbedSelect = (embedKey) => {
     if (embedKey === 'pokemon_japan_sets') {
@@ -1415,10 +1598,14 @@ export async function runCollectrImport({ url, supabaseUrl, supabaseKey }) {
 
     const lookup = new Map()
     items.forEach((item) => {
-      const itemKey =
+      const baseKey =
         buildMatchKey(item.setName, item.collectrName, item.cardNumber) ||
         buildLooseKey(item.setName, item.collectrName, item.cardNumber)
-      if (!itemKey || !itemKey.replace(/\|/g, '').trim()) return
+      if (!baseKey || !baseKey.replace(/\|/g, '').trim()) return
+      const collectionKey =
+        item.collectionKey ||
+        buildCollectionKey(item.collectionId, item.collectionName)
+      const itemKey = `${collectionKey}|${baseKey}`
       const numberKey = normalizeCardNumberForMatch(item.cardNumber)
       const idsForItem = itemSetIds.get(item) || []
       let matched = null
@@ -1503,7 +1690,10 @@ export async function runCollectrImport({ url, supabaseUrl, supabaseKey }) {
         item.matchKey ||
         buildJapanItemKey(collectrSet, rawCardNumber, collectrName)
       if (!itemKey) continue
-      lookup.set(itemKey, { product, checks })
+      const collectionKey =
+        item.collectionKey ||
+        buildCollectionKey(item.collectionId, item.collectionName)
+      lookup.set(`${collectionKey}|${itemKey}`, { product, checks })
     }
 
     return lookup
@@ -1512,10 +1702,9 @@ export async function runCollectrImport({ url, supabaseUrl, supabaseKey }) {
   const missingEnglish = missingItems.filter((item) => !item.isJapanese)
   const missingJapan = missingItems.filter((item) => item.isJapanese)
   const fallbackJapanItems = []
-  productIds.forEach((id) => {
-    const collectr = productMap.get(id)
+  productEntries.forEach((collectr) => {
     if (!collectr?.isJapanese) return
-    if (japanLookup.has(id)) return
+    if (japanLookup.has(collectr.productId)) return
     const matchKey =
       buildJapanItemKey(collectr.setName, collectr.cardNumber, collectr.collectrName) ||
       buildLooseKey(collectr.setName, collectr.collectrName, collectr.cardNumber)
@@ -1525,6 +1714,9 @@ export async function runCollectrImport({ url, supabaseUrl, supabaseKey }) {
       collectrName: collectr.collectrName,
       cardNumber: collectr.cardNumber,
       matchKey,
+      collectionId: collectr.collectionId || null,
+      collectionName: collectr.collectionName || null,
+      collectionKey: collectr.collectionKey || buildCollectionKey(collectr.collectionId, collectr.collectionName),
     })
   })
   const missingEnglishLookup = await matchMissingItems(
@@ -1541,10 +1733,10 @@ export async function runCollectrImport({ url, supabaseUrl, supabaseKey }) {
 
   const results = []
 
-  productIds.forEach((id) => {
-    const collectr = productMap.get(id)
+  productEntries.forEach((collectr) => {
     const isJapanese = collectr?.isJapanese
-    let product = (isJapanese ? japanLookup : englishLookup).get(id) || null
+    let product =
+      (isJapanese ? japanLookup : englishLookup).get(collectr.productId) || null
     const collectrSet = collectr.setName || null
     let japaneseChecks = null
     if (isJapanese) {
@@ -1556,7 +1748,12 @@ export async function runCollectrImport({ url, supabaseUrl, supabaseKey }) {
             collectr?.collectrName ?? null,
           ) ||
           buildLooseKey(collectrSet, collectr?.collectrName, collectr?.cardNumber)
-        const fallback = matchKey ? missingJapanLookup.get(matchKey) || null : null
+        const collectionKey =
+          collectr.collectionKey ||
+          buildCollectionKey(collectr.collectionId, collectr.collectionName)
+        const fallback = matchKey
+          ? missingJapanLookup.get(`${collectionKey}|${matchKey}`) || null
+          : null
         if (fallback?.product) {
           product = fallback.product
           const embeddedFallback = product?.pokemon_japan_sets ?? null
@@ -1602,8 +1799,10 @@ export async function runCollectrImport({ url, supabaseUrl, supabaseKey }) {
     const setEmbed = Array.isArray(embedded) ? embedded[0] ?? null : embedded ?? null
     const productSet = setEmbed?.name ?? null
     results.push({
-      tcg_product_id: id,
+      tcg_product_id: collectr.productId,
       quantity: collectr.quantity,
+      collectr_collection_id: collectr.collectionId || null,
+      collectr_collection_name: collectr.collectionName || null,
       collectr_set: collectrSet,
       collectr_name: collectr.collectrName || null,
       collectr_image_url: collectr.collectrImageUrl || null,
@@ -1623,6 +1822,9 @@ export async function runCollectrImport({ url, supabaseUrl, supabaseKey }) {
   missingItems.forEach((collectr) => {
     const isJapanese = collectr?.isJapanese
     const lookup = isJapanese ? missingJapanLookup : missingEnglishLookup
+    const collectionKey =
+      collectr.collectionKey ||
+      buildCollectionKey(collectr.collectionId, collectr.collectionName)
     const matchKey =
       collectr.matchKey ||
       (isJapanese
@@ -1636,11 +1838,12 @@ export async function runCollectrImport({ url, supabaseUrl, supabaseKey }) {
             collectr.collectrName,
             collectr.cardNumber,
           ))
-    const matchInfo = isJapanese && matchKey ? lookup.get(matchKey) || null : null
+    const lookupKey = matchKey ? `${collectionKey}|${matchKey}` : null
+    const matchInfo = isJapanese && lookupKey ? lookup.get(lookupKey) || null : null
     const product = isJapanese
       ? matchInfo?.product || null
-      : matchKey
-        ? lookup.get(matchKey) || null
+      : lookupKey
+        ? lookup.get(lookupKey) || null
         : null
     const embedded = isJapanese ? product?.pokemon_japan_sets : product?.pokemon_sets
     const setEmbed = Array.isArray(embedded) ? embedded[0] ?? null : embedded ?? null
@@ -1652,6 +1855,8 @@ export async function runCollectrImport({ url, supabaseUrl, supabaseKey }) {
     results.push({
       tcg_product_id: product?.tcg_product_id ?? null,
       quantity: collectr.quantity,
+      collectr_collection_id: collectr.collectionId || null,
+      collectr_collection_name: collectr.collectionName || null,
       collectr_set: collectrSet,
       collectr_name: collectr.collectrName || null,
       collectr_image_url: collectr.collectrImageUrl || null,
@@ -1709,12 +1914,12 @@ export async function runCollectrImport({ url, supabaseUrl, supabaseKey }) {
 
   const summary = {
     totalCollectr,
-    parsedProducts: productIds.length + missingItems.length,
+    parsedProducts: productEntries.length + missingItems.length,
     matchedProducts: results.filter((r) => r.matched).length,
     skippedGraded,
   }
 
-  return { summary, results }
+  return { summary, results, collections }
 }
 
 

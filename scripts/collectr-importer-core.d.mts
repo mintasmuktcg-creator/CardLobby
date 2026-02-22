@@ -5,8 +5,18 @@ export type CollectrImportSummary = {
   skippedGraded: number
 }
 
+export type CollectrCollection = {
+  id: string
+  name: string
+  [key: string]: unknown
+}
+
 export function runCollectrImport(args: {
   url: string
   supabaseUrl: string
   supabaseKey: string
-}): Promise<{ summary: CollectrImportSummary; results: unknown[] }>
+}): Promise<{
+  summary: CollectrImportSummary
+  results: unknown[]
+  collections?: CollectrCollection[]
+}>

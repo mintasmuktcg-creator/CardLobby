@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useState } from 'react'
+import type { ChangeEvent } from 'react'
 import Papa from 'papaparse'
 import { supabase } from './lib/supabaseClient'
 import './App.css'
@@ -224,9 +225,17 @@ type CollectrImportSummary = {
   skippedGraded: number
 }
 
+type CollectrCollection = {
+  id: string
+  name: string
+  [key: string]: unknown
+}
+
 type CollectrImportResult = {
   tcg_product_id: number | null
   quantity: number
+  collectr_collection_id?: string | null
+  collectr_collection_name?: string | null
   collectr_set: string | null
   collectr_name?: string | null
   collectr_image_url?: string | null
@@ -245,6 +254,8 @@ type CollectrImportResult = {
     name_match: boolean | null
   } | null
 }
+
+const COLLECTR_COLLECTIONS_CACHE_KEY = 'cardlobby.collectr.collections'
 
 type SetInfo = {
   id: string
@@ -1625,6 +1636,8 @@ function CollectrImporter() {
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
   const [summary, setSummary] = useState<CollectrImportSummary | null>(null)
   const [results, setResults] = useState<CollectrImportResult[]>([])
+  const [collections, setCollections] = useState<CollectrCollection[]>([])
+  const [selectedCollectionId, setSelectedCollectionId] = useState('')
   const totalMarketValue = useMemo(() => {
     if (!results.length) return null
     let total = 0
@@ -1639,6 +1652,62 @@ function CollectrImporter() {
     return hasPrice ? total : null
   }, [results])
 
+  const buildResultsByCollection = (rows: CollectrImportResult[]) => {
+    const map: Record<string, CollectrImportResult[]> = {}
+    rows.forEach((row) => {
+      const key = row.collectr_collection_id || 'unknown'
+      if (!map[key]) map[key] = []
+      map[key].push(row)
+    })
+    return map
+  }
+
+  const writeCollectionCache = (
+    nextCollections: CollectrCollection[],
+    nextResults: CollectrImportResult[],
+  ) => {
+    if (typeof window === 'undefined') return null
+    const resultsByCollection = buildResultsByCollection(nextResults)
+    const payload = {
+      collections: nextCollections,
+      resultsByCollection,
+    }
+    window.localStorage.setItem(
+      COLLECTR_COLLECTIONS_CACHE_KEY,
+      JSON.stringify(payload),
+    )
+    return resultsByCollection
+  }
+
+  const readCollectionCache = () => {
+    if (typeof window === 'undefined') return null
+    const raw = window.localStorage.getItem(COLLECTR_COLLECTIONS_CACHE_KEY)
+    if (!raw) return null
+    try {
+      return JSON.parse(raw) as {
+        collections?: CollectrCollection[]
+        resultsByCollection?: Record<string, CollectrImportResult[]>
+      }
+    } catch {
+      return null
+    }
+  }
+
+  const applyCollectionFromCache = (
+    collectionId: string,
+    fallback: CollectrImportResult[],
+  ) => {
+    const cached = readCollectionCache()
+    const next =
+      cached?.resultsByCollection?.[collectionId] ??
+      cached?.resultsByCollection?.[collectionId || 'unknown']
+    if (next) {
+      setResults(next)
+    } else {
+      setResults(fallback)
+    }
+  }
+
   const runImport = async () => {
     const trimmed = url.trim()
     if (!trimmed) {
@@ -1650,6 +1719,8 @@ function CollectrImporter() {
     setErrorMessage(null)
     setSummary(null)
     setResults([])
+    setCollections([])
+    setSelectedCollectionId('')
 
     try {
       const params = new URLSearchParams({ url: trimmed })
@@ -1659,6 +1730,7 @@ function CollectrImporter() {
       let payload: {
         summary?: CollectrImportSummary
         results?: CollectrImportResult[]
+        collections?: CollectrCollection[]
         error?: string
         message?: string
       } = {}
@@ -1675,13 +1747,35 @@ function CollectrImporter() {
         throw new Error(payload?.error || payload?.message || text || 'Import failed.')
       }
 
+      const nextCollections = Array.isArray(payload.collections)
+        ? payload.collections
+        : []
+      const nextResults = Array.isArray(payload.results) ? payload.results : []
       setSummary(payload.summary ?? null)
-      setResults(Array.isArray(payload.results) ? payload.results : [])
+      setCollections(nextCollections)
+      if (nextCollections.length) {
+        const defaultId = nextCollections[0]?.id || ''
+        const cached = writeCollectionCache(nextCollections, nextResults)
+        setSelectedCollectionId(defaultId)
+        if (defaultId && cached?.[defaultId]) {
+          setResults(cached[defaultId])
+        } else {
+          setResults(nextResults)
+        }
+      } else {
+        setResults(nextResults)
+      }
       setStatus('done')
     } catch (err) {
       setStatus('error')
       setErrorMessage(formatError(err))
     }
+  }
+
+  const handleCollectionChange = (event: ChangeEvent<HTMLSelectElement>) => {
+    const nextId = event.target.value
+    setSelectedCollectionId(nextId)
+    applyCollectionFromCache(nextId, results)
   }
 
   return (
@@ -1717,6 +1811,20 @@ function CollectrImporter() {
             {status === 'loading' ? 'Importing...' : 'Run import'}
           </button>
         </form>
+        {collections.length > 0 && (
+          <div className="importer-row">
+            <select
+              value={selectedCollectionId}
+              onChange={handleCollectionChange}
+            >
+              {collections.map((collection) => (
+                <option key={collection.id} value={collection.id}>
+                  {collection.name}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
         {errorMessage && <div className="importer-error">{errorMessage}</div>}
         {summary && (
           <div className="importer-summary">
