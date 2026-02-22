@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useState } from 'react'
+﻿import { useEffect, useLayoutEffect, useMemo, useState } from 'react'
 import type { ChangeEvent } from 'react'
 import Papa from 'papaparse'
 import { supabase } from './lib/supabaseClient'
@@ -781,502 +781,529 @@ function App() {
     }
   }, [visibleCards, ownedCounts])
 
+  const handleSignOut = () => {
+    supabase.auth.signOut()
+    if (isAdminRoute) {
+      go('/')
+    }
+  }
+
+  const topbar = (
+    <header className="topbar">
+      <div className="topbar-left">
+        <button className="logo" onClick={() => go('/')}>
+          <span className="logo-mark">Card Lobby</span>
+        </button>
+        <div className="topbar-links">
+          <button
+            className={path === '/' ? 'topbar-link active' : 'topbar-link'}
+            onClick={() => go('/')}
+          >
+            Browse cards
+          </button>
+          <button
+            className={path === '/collectr-importer' ? 'topbar-link active' : 'topbar-link'}
+            onClick={() => go('/collectr-importer')}
+          >
+            Collectr Importer
+          </button>
+          {isAdmin && (
+            <button
+              className={path === '/admin' ? 'topbar-link active' : 'topbar-link'}
+              onClick={() => go('/admin')}
+            >
+              Admin
+            </button>
+          )}
+        </div>
+      </div>
+      <div className="topbar-right">
+        {session ? (
+          <>
+            <div className="pill muted">
+              {session.user.email}
+              {isAdmin ? ' · Admin' : ''}
+            </div>
+            <button className="btn ghost small" onClick={handleSignOut}>
+              Sign out
+            </button>
+          </>
+        ) : (
+          <>
+            <button
+              className={
+                authMode === 'signin' ? 'btn ghost small active' : 'btn ghost small'
+              }
+              onClick={() => {
+                openAuthModal('signin')
+              }}
+            >
+              Sign in
+            </button>
+            <button
+              className={
+                authMode === 'signup' ? 'btn primary small' : 'btn ghost small'
+              }
+              onClick={() => {
+                openAuthModal('signup')
+              }}
+            >
+              Sign up
+            </button>
+          </>
+        )}
+      </div>
+    </header>
+  )
+
+  const authModal =
+    authOpen && !session ? (
+      <div
+        className="modal-backdrop"
+        role="dialog"
+        aria-modal="true"
+        onClick={() => setAuthOpen(false)}
+      >
+        <div className="modal auth-modal" onClick={(e) => e.stopPropagation()}>
+          <div className="modal-head">
+            <div className="pill">{authMode === 'signin' ? 'Sign in' : 'Sign up'}</div>
+            <button className="btn ghost small" onClick={() => setAuthOpen(false)}>
+              Close
+            </button>
+          </div>
+          <form
+            className="auth-form auth-modal-form"
+            onSubmit={async (e) => {
+              e.preventDefault()
+              setAuthMessage(null)
+              if (authMode === 'signin') {
+                const { error } = await supabase.auth.signInWithPassword({
+                  email,
+                  password,
+                })
+                if (error) setAuthMessage(error.message)
+              } else {
+                const { data, error } = await supabase.auth.signUp({
+                  email,
+                  password,
+                })
+                if (error) setAuthMessage(error.message)
+                else if (data.user) {
+                  setAuthMessage('Check your email to confirm sign-up (if required).')
+                }
+              }
+            }}
+          >
+            <span className="swatch-note">
+              {authMode === 'signin'
+                ? 'Use your existing Card Lobby account'
+                : 'Create an account to access collections and admin tools'}
+            </span>
+            <div className="auth-fields">
+              <input
+                type="email"
+                placeholder="Email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                required
+              />
+              <input
+                type="password"
+                placeholder="Password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                required
+              />
+            </div>
+            <div className="auth-actions">
+              <button
+                type="button"
+                className="btn ghost"
+                onClick={() => {
+                  setAuthMode(authMode === 'signin' ? 'signup' : 'signin')
+                  setAuthMessage(null)
+                }}
+              >
+                {authMode === 'signin'
+                  ? 'Need an account? Sign up'
+                  : 'Have an account? Sign in'}
+              </button>
+              <button className="btn primary" type="submit">
+                {authMode === 'signin' ? 'Sign in' : 'Create account'}
+              </button>
+            </div>
+            {authMessage && <div className="auth-message">{authMessage}</div>}
+          </form>
+        </div>
+      </div>
+    ) : null
+
   if (isAdminRoute) {
     return (
-      <div className="page">
-        <nav className="nav">
-          <div className="brand">Card Lobby — Admin</div>
-          <div className="nav-actions">
-            <button className="btn ghost" onClick={() => go('/')}>
-              Back to app
-            </button>
-            <button className="btn ghost" onClick={() => go('/collectr-importer')}>
-              Collectr Importer
-            </button>
-            {session ? (
-              <>
-                <div className="pill muted">
-                  {session.user.email}
-                  {isAdmin ? ' · Admin' : ''}
+      <div className="app-shell">
+        {topbar}
+        <div className="app-body no-sidebar">
+          <main className="main-content">
+            <div className="page content-narrow">
+              {!session || !isAdmin ? (
+                <div className="card-surface denial">
+                  <div className="pill muted">Access denied</div>
+                  <p>You must be signed in as the admin to view this page.</p>
+                  <button className="btn primary" onClick={() => go('/')}>
+                    Go to sign in
+                  </button>
                 </div>
-                <button
-                  className="btn ghost"
-                  onClick={() => {
-                    supabase.auth.signOut()
-                    go('/')
-                  }}
-                >
-                  Sign out
-                </button>
-              </>
-            ) : null}
-          </div>
-        </nav>
-
-        {!session || !isAdmin ? (
-          <div className="card-surface denial">
-            <div className="pill muted">Access denied</div>
-            <p>You must be signed in as the admin to view this page.</p>
-            <button className="btn primary" onClick={() => go('/')}>
-              Go to sign in
-            </button>
-          </div>
-        ) : (
-          <AdminPortal />
-        )}
+              ) : (
+                <AdminPortal />
+              )}
+            </div>
+          </main>
+        </div>
+        {authModal}
       </div>
     )
   }
 
   if (isCollectrRoute) {
     return (
-      <div className="page">
-        <nav className="nav">
-          <div className="brand">Card Lobby</div>
-          <div className="nav-actions">
-            <button className="btn ghost" onClick={() => go('/')}>
-              Browse cards
-            </button>
-            {session ? (
-              <>
-                <div className="pill muted">
-                  {session.user.email}
-                  {isAdmin ? ' Â· Admin' : ''}
-                </div>
-                <button
-                  className="btn ghost"
-                  onClick={() => {
-                    supabase.auth.signOut()
-                  }}
-                >
-                  Sign out
-                </button>
-              </>
-            ) : (
-              <>
-                <button
-                  className={authMode === 'signin' ? 'btn ghost active' : 'btn ghost'}
-                  onClick={() => {
-                    openAuthModal('signin')
-                  }}
-                >
-                  Sign in
-                </button>
-                <button
-                  className={authMode === 'signup' ? 'btn primary' : 'btn ghost'}
-                  onClick={() => {
-                    openAuthModal('signup')
-                  }}
-                >
-                  Sign up
-                </button>
-              </>
-            )}
-          </div>
-        </nav>
-
-        <CollectrImporter />
-
-        {authOpen && !session && (
-          <div
-            className="modal-backdrop"
-            role="dialog"
-            aria-modal="true"
-            onClick={() => setAuthOpen(false)}
-          >
-            <div
-              className="modal auth-modal"
-              onClick={(e) => e.stopPropagation()}
-            >
-              <div className="modal-head">
-                <div className="pill">{authMode === 'signin' ? 'Sign in' : 'Sign up'}</div>
-                <button className="btn ghost small" onClick={() => setAuthOpen(false)}>
-                  Close
-                </button>
-              </div>
-              <form
-                className="auth-form auth-modal-form"
-                onSubmit={async (e) => {
-                  e.preventDefault()
-                  setAuthMessage(null)
-                  if (authMode === 'signin') {
-                    const { error } = await supabase.auth.signInWithPassword({
-                      email,
-                      password,
-                    })
-                    if (error) setAuthMessage(error.message)
-                  } else {
-                    const { data, error } = await supabase.auth.signUp({
-                      email,
-                      password,
-                    })
-                    if (error) setAuthMessage(error.message)
-                    else if (data.user) {
-                      setAuthMessage('Check your email to confirm sign-up (if required).')
-                    }
-                  }
-                }}
-              >
-                <span className="swatch-note">
-                  {authMode === 'signin'
-                    ? 'Use your existing Card Lobby account'
-                    : 'Create an account to access collections and admin tools'}
-                </span>
-                <div className="auth-fields">
-                  <input
-                    type="email"
-                    placeholder="Email"
-                    value={email}
-                    onChange={(e) => setEmail(e.target.value)}
-                    required
-                  />
-                  <input
-                    type="password"
-                    placeholder="Password"
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                    required
-                  />
-                </div>
-                <div className="auth-actions">
-                  <button
-                    type="button"
-                    className="btn ghost"
-                    onClick={() => {
-                      setAuthMode(authMode === 'signin' ? 'signup' : 'signin')
-                      setAuthMessage(null)
-                    }}
-                  >
-                    {authMode === 'signin'
-                      ? 'Need an account? Sign up'
-                      : 'Have an account? Sign in'}
-                  </button>
-                  <button className="btn primary" type="submit">
-                    {authMode === 'signin' ? 'Sign in' : 'Create account'}
-                  </button>
-                </div>
-                {authMessage && <div className="auth-message">{authMessage}</div>}
-              </form>
+      <div className="app-shell">
+        {topbar}
+        <div className="app-body no-sidebar">
+          <main className="main-content">
+            <div className="page content-narrow">
+              <CollectrImporter />
             </div>
-          </div>
-        )}
+          </main>
+        </div>
+        {authModal}
       </div>
     )
   }
+
 
   const currentSet = sets.find((s) => s.id === selectedSetId) || null
   const setTitle =
     currentSet?.name || (selectedSetId === 'csv-set' ? CSV_FALLBACK_SET_TITLE : 'Select a set')
 
   return (
-    <div className="page">
-      <nav className="nav">
-        <div className="brand">Card Lobby</div>
-        <div className="nav-actions">
-          <button className="btn ghost" onClick={() => go('/collectr-importer')}>
-            Collectr Importer
-          </button>
-          {session ? (
-            <>
-              <div className="pill muted">
-                {session.user.email}
-                {isAdmin ? ' · Admin' : ''}
-              </div>
-              <button
-                className="btn ghost"
-                onClick={() => {
-                  supabase.auth.signOut()
-                }}
-              >
-                Sign out
-              </button>
-            </>
-          ) : (
-            <>
-              <button
-                className={authMode === 'signin' ? 'btn ghost active' : 'btn ghost'}
-                onClick={() => {
-                  openAuthModal('signin')
-                }}
-              >
-                Sign in
-              </button>
-              <button
-                className={authMode === 'signup' ? 'btn primary' : 'btn ghost'}
-                onClick={() => {
-                  openAuthModal('signup')
-                }}
-              >
-                Sign up
-              </button>
-            </>
-          )}
-        </div>
-      </nav>
-
-      <h1 className="headline">
-        A Muk-inspired home for trading card buyers, sellers, and collectors.
-      </h1>
-      <p className="lede">
-        Sticky pricing insights, gooey-fast deck building, and collections that
-        stay organized even when the market gets messy.
-      </p>
-      <section className="set-hero">
-        <div>
-          <div className="pill muted">Set preview</div>
-          <h2>{setTitle}</h2>
-          <p>
-            {selectedSetId === 'all'
-              ? 'Choose a set to load its products.'
-              : cards.length
-                ? `${cards.length} products loaded.`
-                : loading
-                  ? 'Loading products…'
-                  : 'No products loaded yet.'}
-          </p>
-          {cards.length ? (
-            <div className="set-metrics">
-              <div className="metric">
-                <span className="metric-label">Owned</span>
-                <span className="metric-value">
-                  {ownedStats.owned}/{ownedStats.total}
-                </span>
-                <span className="metric-sub">
-                  {ownedStats.total === 0
-                    ? '0% complete'
-                    : `${ownedStats.percent.toFixed(1)}% complete`}
-                </span>
-              </div>
-              <div className="metric">
-                <span className="metric-label">Total set value</span>
-                <span className="metric-value">
-                  {formatPrice(totalValue || 0)}
-                </span>
-              </div>
-              <div className="metric">
-                <span className="metric-label">Total set value owned</span>
-                <span className="metric-value">
-                  {formatPrice(ownedMarketValue || 0)}
-                </span>
+    <div className="app-shell">
+      {topbar}
+      <div className="app-body">
+        <aside className="sidebar">
+          <div className="sidebar-section">
+            <div>
+              <div className="pill muted">Set navigation</div>
+              <p className="sidebar-note">
+                Pick a catalog and set to load cards into the grid.
+              </p>
+            </div>
+            <div className="sidebar-block">
+              <span className="sidebar-label">Catalog</span>
+              <div className="segmented">
+                <button
+                  className={catalog === 'pokemon' ? 'seg-btn active' : 'seg-btn'}
+                  onClick={() => setCatalog('pokemon')}
+                >
+                  Pokemon
+                </button>
+                <button
+                  className={catalog === 'pokemon_japan' ? 'seg-btn active' : 'seg-btn'}
+                  onClick={() => setCatalog('pokemon_japan')}
+                >
+                  Pokemon Japan
+                </button>
               </div>
             </div>
-          ) : null}
-        </div>
-      </section>
-
-      <section className="cards-section">
-        <div className="cards-header">
-          <div>
-            <div className="pill">Ascending order</div>
-            <h3>Browse the set</h3>
-          </div>
-          <div className="segmented">
-            <button
-              className={viewMode === 'singles' ? 'seg-btn active' : 'seg-btn'}
-              onClick={() => setViewModeWithScroll('singles')}
-            >
-              Singles
-            </button>
-            <button
-              className={viewMode === 'sealed' ? 'seg-btn active' : 'seg-btn'}
-              onClick={() => setViewModeWithScroll('sealed')}
-            >
-              Sealed / kits
-            </button>
-          </div>
-        </div>
-
-        <div className="catalog-row">
-          <div className="pill">Catalog</div>
-          <div className="segmented">
-            <button
-              className={catalog === 'pokemon' ? 'seg-btn active' : 'seg-btn'}
-              onClick={() => setCatalog('pokemon')}
-            >
-              Pokemon
-            </button>
-            <button
-              className={catalog === 'pokemon_japan' ? 'seg-btn active' : 'seg-btn'}
-              onClick={() => setCatalog('pokemon_japan')}
-            >
-              Pokemon Japan
-            </button>
-          </div>
-        </div>
-
-        <div className="filter-row">
-          <div className="pill">Set</div>
-          <select
-            className="select"
-            value={selectedSetId}
-            onChange={(e) => setSelectedSetId(e.target.value)}
-          >
-            <option value="all">Choose a set…</option>
-            {sets.map((set) => (
-              <option key={set.id} value={set.id}>
-                {set.name}
-              </option>
-            ))}
-          </select>
-          <div className="bulk-actions">
-              <button
-                className="btn ghost small"
-                type="button"
-                onClick={() => setConfirmAction('catch')}
-                disabled={!ownedEnabled || visibleCards.length === 0}
+            <div className="sidebar-block">
+              <span className="sidebar-label">Set</span>
+              <select
+                className="select"
+                value={selectedSetId}
+                onChange={(e) => setSelectedSetId(e.target.value)}
               >
-                Catch all
-              </button>
-              <button
-                className="btn ghost small"
-                type="button"
-                onClick={() => setConfirmAction('release')}
-                disabled={!ownedEnabled || visibleCards.length === 0}
-              >
-                Release all
-              </button>
+                <option value="all">Choose a set…</option>
+                {sets.map((set) => (
+                  <option key={set.id} value={set.id}>
+                    {set.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="sidebar-block">
+              <span className="sidebar-label">Loaded</span>
+              <div className="sidebar-stats">
+                <div className="sidebar-stat">
+                  <span className="sidebar-stat-value">{cards.length}</span>
+                  <span className="sidebar-stat-label">Products</span>
+                </div>
+                <div className="sidebar-stat">
+                  <span className="sidebar-stat-value">{visibleCards.length}</span>
+                  <span className="sidebar-stat-label">Visible</span>
+                </div>
+              </div>
             </div>
           </div>
+        </aside>
+        <main className="main-content">
+          <div className="page">
+            <h1 className="headline">
+              A Muk-inspired home for trading card buyers, sellers, and collectors.
+            </h1>
+            <p className="lede">
+              Sticky pricing insights, gooey-fast deck building, and collections that
+              stay organized even when the market gets messy.
+            </p>
+            <section className="set-hero">
+              <div>
+                <div className="pill muted">Set preview</div>
+                <h2>{setTitle}</h2>
+                <p>
+                  {selectedSetId === 'all'
+                    ? 'Choose a set to load its products.'
+                    : cards.length
+                      ? `${cards.length} products loaded.`
+                      : loading
+                        ? 'Loading products…'
+                        : 'No products loaded yet.'}
+                </p>
+                {cards.length ? (
+                  <div className="set-metrics">
+                    <div className="metric">
+                      <span className="metric-label">Owned</span>
+                      <span className="metric-value">
+                        {ownedStats.owned}/{ownedStats.total}
+                      </span>
+                      <span className="metric-sub">
+                        {ownedStats.total === 0
+                          ? '0% complete'
+                          : `${ownedStats.percent.toFixed(1)}% complete`}
+                      </span>
+                    </div>
+                    <div className="metric">
+                      <span className="metric-label">Total set value</span>
+                      <span className="metric-value">
+                        {formatPrice(totalValue || 0)}
+                      </span>
+                    </div>
+                    <div className="metric">
+                      <span className="metric-label">Total set value owned</span>
+                      <span className="metric-value">
+                        {formatPrice(ownedMarketValue || 0)}
+                      </span>
+                    </div>
+                  </div>
+                ) : null}
+              </div>
+            </section>
 
-        {viewMode === 'singles' && availableSubtypes.length > 0 && (
-          <div className="chip-row">
-            {availableSubtypes.map((subtype) => {
-              const active = subtypeFilters.has(subtype)
-              return (
-                <button
-                  key={subtype}
-                  className={active ? 'chip active' : 'chip'}
-                  onClick={() => {
-                    const next = new Set(subtypeFilters)
-                    if (active) {
-                      next.delete(subtype)
-                    } else {
-                      next.add(subtype)
-                    }
-                    if (next.size === 0) {
-                      availableSubtypes.forEach((value) => next.add(value))
-                    }
-                    setSubtypeFilters(next)
-                  }}
-                >
-                  {subtype}
-                </button>
-              )
-            })}
+            <section className="cards-section">
+              <div className="cards-header">
+                <div>
+                  <div className="pill">Ascending order</div>
+                  <h3>Browse the set</h3>
+                </div>
+                <div className="cards-toolbar">
+                  <div className="segmented">
+                    <button
+                      className={viewMode === 'singles' ? 'seg-btn active' : 'seg-btn'}
+                      onClick={() => setViewModeWithScroll('singles')}
+                    >
+                      Singles
+                    </button>
+                    <button
+                      className={viewMode === 'sealed' ? 'seg-btn active' : 'seg-btn'}
+                      onClick={() => setViewModeWithScroll('sealed')}
+                    >
+                      Sealed / kits
+                    </button>
+                  </div>
+                  <div className="bulk-actions">
+                    <button
+                      className="btn ghost small"
+                      type="button"
+                      onClick={() => setConfirmAction('catch')}
+                      disabled={!ownedEnabled || visibleCards.length === 0}
+                    >
+                      Catch all
+                    </button>
+                    <button
+                      className="btn ghost small"
+                      type="button"
+                      onClick={() => setConfirmAction('release')}
+                      disabled={!ownedEnabled || visibleCards.length === 0}
+                    >
+                      Release all
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              {viewMode === 'singles' && availableSubtypes.length > 0 && (
+                <div className="chip-row">
+                  {availableSubtypes.map((subtype) => {
+                    const active = subtypeFilters.has(subtype)
+                    return (
+                      <button
+                        key={subtype}
+                        className={active ? 'chip active' : 'chip'}
+                        onClick={() => {
+                          const next = new Set(subtypeFilters)
+                          if (active) {
+                            next.delete(subtype)
+                          } else {
+                            next.add(subtype)
+                          }
+                          if (next.size === 0) {
+                            availableSubtypes.forEach((value) => next.add(value))
+                          }
+                          setSubtypeFilters(next)
+                        }}
+                      >
+                        {subtype}
+                      </button>
+                    )
+                  })}
+                </div>
+              )}
+
+              <div className="cards-grid">
+                {loading && <div className="card-tile loading">Loading set…</div>}
+                {!loading && visibleCards.length === 0 && (
+                  <div className="card-tile loading">No items found.</div>
+                )}
+                {visibleCards.map((card) => {
+                  const cardKey = getCardKey(card)
+                  const ownedCount = ownedCounts[cardKey] ?? 0
+                  const isCaught = ownedCount > 0
+                  return (
+                  <article
+                    className="card-tile"
+                    key={cardKey}
+                  >
+                    <div className="card-media">
+                      <button
+                        type="button"
+                        className={`pokeball-toggle${isCaught ? ' caught' : ''}`}
+                        aria-pressed={isCaught}
+                        aria-label={isCaught ? 'Mark as not caught' : 'Mark as caught'}
+                        disabled={!ownedEnabled}
+                        onClick={() => {
+                          if (!ownedEnabled) return
+                          const next = { ...ownedCounts }
+                          if (isCaught) {
+                            delete next[cardKey]
+                            if (card.productUuid) {
+                              void persistOwnedUpdates([], [card.productUuid])
+                            }
+                          } else {
+                            next[cardKey] = 1
+                            if (card.productUuid) {
+                              void persistOwnedUpdates(
+                                [{ product_id: card.productUuid, quantity: 1 }],
+                                [],
+                              )
+                            }
+                          }
+                          setOwnedCounts(next)
+                        }}
+                      >
+                        <span className="pokeball" />
+                      </button>
+                      {isCaught && (
+                        <label className="owned-qty">
+                          <span>Qty</span>
+                          <input
+                            type="number"
+                            min="1"
+                            step="1"
+                            value={ownedCount}
+                            aria-label="Owned quantity"
+                            disabled={!ownedEnabled}
+                            onChange={(e) => {
+                              if (!ownedEnabled) return
+                              const nextValue = Number.parseInt(e.target.value, 10)
+                              const next = { ...ownedCounts }
+                              if (!Number.isFinite(nextValue) || nextValue <= 0) {
+                                delete next[cardKey]
+                                if (card.productUuid) {
+                                  void persistOwnedUpdates([], [card.productUuid])
+                                }
+                              } else {
+                                next[cardKey] = nextValue
+                                if (card.productUuid) {
+                                  void persistOwnedUpdates(
+                                    [{ product_id: card.productUuid, quantity: nextValue }],
+                                    [],
+                                  )
+                                }
+                              }
+                              setOwnedCounts(next)
+                            }}
+                          />
+                        </label>
+                      )}
+                      {card.imageUrl ? (
+                        <img src={card.imageUrl} alt={card.name} loading="lazy" />
+                      ) : (
+                        <div className="img-placeholder">No image</div>
+                      )}
+                      <div className="card-badge">#{card.extNumber ?? '—'}</div>
+                    </div>
+                    <div className="card-body">
+                      <div className="card-title">{card.name}</div>
+                      <div className="card-meta">
+                        <span>{card.extRarity || '—'}</span>
+                        <span>•</span>
+                        <span>{card.extCardType || '—'}</span>
+                      </div>
+                      <div className="price-row">
+                        <span className="price-label">Market</span>
+                        <span className="price-value primary">
+                          {formatPrice(card.marketPrice)}
+                        </span>
+                      </div>
+                      <div className="price-row subtle">
+                        <span className="price-label">Mid</span>
+                        <span className="price-value">{formatPrice(card.midPrice)}</span>
+                      </div>
+                      <div className="price-row subtle">
+                        <span className="price-label">Low</span>
+                        <span className="price-value">{formatPrice(card.lowPrice)}</span>
+                      </div>
+                    </div>
+                  </article>
+                  )
+                })}
+              </div>
+            </section>
+
+            <section className="palette">
+              <div className="palette-header">
+                <span className="pill muted">Muk palette</span>
+                <span className="swatch-note">Use these in future components</span>
+              </div>
+              <div className="swatches">
+                <div className="swatch sludge">
+                  <div className="tone">#6b2a7c</div>
+                  <div className="label">Sludge base</div>
+                </div>
+                <div className="swatch ooze">
+                  <div className="tone">#b8f000</div>
+                  <div className="label">Toxic pop</div>
+                </div>
+                <div className="swatch ink">
+                  <div className="tone">#1c0b26</div>
+                  <div className="label">Shadow</div>
+                </div>
+                <div className="swatch mist">
+                  <div className="tone">#f3ecff</div>
+                  <div className="label">Highlight</div>
+                </div>
+              </div>
+            </section>
           </div>
-        )}
-
-        <div className="cards-grid">
-          {loading && <div className="card-tile loading">Loading set…</div>}
-          {!loading && visibleCards.length === 0 && (
-            <div className="card-tile loading">No items found.</div>
-          )}
-          {visibleCards.map((card) => {
-            const cardKey = getCardKey(card)
-            const ownedCount = ownedCounts[cardKey] ?? 0
-            const isCaught = ownedCount > 0
-            return (
-            <article
-              className="card-tile"
-              key={cardKey}
-            >
-              <div className="card-media">
-                <button
-                  type="button"
-                  className={`pokeball-toggle${isCaught ? ' caught' : ''}`}
-                  aria-pressed={isCaught}
-                  aria-label={isCaught ? 'Mark as not caught' : 'Mark as caught'}
-                  disabled={!ownedEnabled}
-                  onClick={() => {
-                    if (!ownedEnabled) return
-                    const next = { ...ownedCounts }
-                    if (isCaught) {
-                      delete next[cardKey]
-                      if (card.productUuid) {
-                        void persistOwnedUpdates([], [card.productUuid])
-                      }
-                    } else {
-                      next[cardKey] = 1
-                      if (card.productUuid) {
-                        void persistOwnedUpdates(
-                          [{ product_id: card.productUuid, quantity: 1 }],
-                          [],
-                        )
-                      }
-                    }
-                    setOwnedCounts(next)
-                  }}
-                >
-                  <span className="pokeball" />
-                </button>
-                {isCaught && (
-                  <label className="owned-qty">
-                    <span>Qty</span>
-                    <input
-                      type="number"
-                      min="1"
-                      step="1"
-                      value={ownedCount}
-                      aria-label="Owned quantity"
-                      disabled={!ownedEnabled}
-                      onChange={(e) => {
-                        if (!ownedEnabled) return
-                        const nextValue = Number.parseInt(e.target.value, 10)
-                        const next = { ...ownedCounts }
-                        if (!Number.isFinite(nextValue) || nextValue <= 0) {
-                          delete next[cardKey]
-                          if (card.productUuid) {
-                            void persistOwnedUpdates([], [card.productUuid])
-                          }
-                        } else {
-                          next[cardKey] = nextValue
-                          if (card.productUuid) {
-                            void persistOwnedUpdates(
-                              [{ product_id: card.productUuid, quantity: nextValue }],
-                              [],
-                            )
-                          }
-                        }
-                        setOwnedCounts(next)
-                      }}
-                    />
-                  </label>
-                )}
-                {card.imageUrl ? (
-                  <img src={card.imageUrl} alt={card.name} loading="lazy" />
-                ) : (
-                  <div className="img-placeholder">No image</div>
-                )}
-                <div className="card-badge">#{card.extNumber ?? '—'}</div>
-              </div>
-              <div className="card-body">
-                <div className="card-title">{card.name}</div>
-                <div className="card-meta">
-                  <span>{card.extRarity || '—'}</span>
-                  <span>•</span>
-                  <span>{card.extCardType || '—'}</span>
-                </div>
-                <div className="price-row">
-                  <span className="price-label">Market</span>
-                  <span className="price-value primary">
-                    {formatPrice(card.marketPrice)}
-                  </span>
-                </div>
-                <div className="price-row subtle">
-                  <span className="price-label">Mid</span>
-                  <span className="price-value">{formatPrice(card.midPrice)}</span>
-                </div>
-                <div className="price-row subtle">
-                  <span className="price-label">Low</span>
-                  <span className="price-value">{formatPrice(card.lowPrice)}</span>
-                </div>
-              </div>
-            </article>
-            )
-          })}
-        </div>
-      </section>
-
+        </main>
+      </div>
       {confirmAction && ownedEnabled && (
         <div className="modal-backdrop" role="dialog" aria-modal="true">
           <div className="modal">
@@ -1308,115 +1335,7 @@ function App() {
           </div>
         </div>
       )}
-
-      {authOpen && !session && (
-        <div
-          className="modal-backdrop"
-          role="dialog"
-          aria-modal="true"
-          onClick={() => setAuthOpen(false)}
-        >
-          <div
-            className="modal auth-modal"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="modal-head">
-              <div className="pill">{authMode === 'signin' ? 'Sign in' : 'Sign up'}</div>
-              <button className="btn ghost small" onClick={() => setAuthOpen(false)}>
-                Close
-              </button>
-            </div>
-            <form
-              className="auth-form auth-modal-form"
-              onSubmit={async (e) => {
-                e.preventDefault()
-                setAuthMessage(null)
-                if (authMode === 'signin') {
-                  const { error } = await supabase.auth.signInWithPassword({
-                    email,
-                    password,
-                  })
-                  if (error) setAuthMessage(error.message)
-                } else {
-                  const { data, error } = await supabase.auth.signUp({
-                    email,
-                    password,
-                  })
-                  if (error) setAuthMessage(error.message)
-                  else if (data.user) {
-                    setAuthMessage('Check your email to confirm sign-up (if required).')
-                  }
-                }
-              }}
-            >
-              <span className="swatch-note">
-                {authMode === 'signin'
-                  ? 'Use your existing Card Lobby account'
-                  : 'Create an account to access collections and admin tools'}
-              </span>
-              <div className="auth-fields">
-                <input
-                  type="email"
-                  placeholder="Email"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  required
-                />
-                <input
-                  type="password"
-                  placeholder="Password"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  required
-                />
-              </div>
-              <div className="auth-actions">
-                <button
-                  type="button"
-                  className="btn ghost"
-                  onClick={() => {
-                    setAuthMode(authMode === 'signin' ? 'signup' : 'signin')
-                    setAuthMessage(null)
-                  }}
-                >
-                  {authMode === 'signin'
-                    ? 'Need an account? Sign up'
-                    : 'Have an account? Sign in'}
-                </button>
-                <button className="btn primary" type="submit">
-                  {authMode === 'signin' ? 'Sign in' : 'Create account'}
-                </button>
-              </div>
-              {authMessage && <div className="auth-message">{authMessage}</div>}
-            </form>
-          </div>
-        </div>
-      )}
-
-      <section className="palette">
-        <div className="palette-header">
-          <span className="pill muted">Muk palette</span>
-          <span className="swatch-note">Use these in future components</span>
-        </div>
-        <div className="swatches">
-          <div className="swatch sludge">
-            <div className="tone">#6b2a7c</div>
-            <div className="label">Sludge base</div>
-          </div>
-          <div className="swatch ooze">
-            <div className="tone">#b8f000</div>
-            <div className="label">Toxic pop</div>
-          </div>
-          <div className="swatch ink">
-            <div className="tone">#1c0b26</div>
-            <div className="label">Shadow</div>
-          </div>
-          <div className="swatch mist">
-            <div className="tone">#f3ecff</div>
-            <div className="label">Highlight</div>
-          </div>
-        </div>
-      </section>
+      {authModal}
     </div>
   )
 }
@@ -1933,4 +1852,5 @@ function CollectrImporter() {
     </section>
   )
 }
+
 
