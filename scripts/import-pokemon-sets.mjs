@@ -108,6 +108,7 @@ async function run() {
     .from('pokemon_sets')
     .select('id, name, code, tcg_group_id')
     .eq('tcg_type_id', tcgTypeId)
+    .eq('region', 'EN')
   if (existingError) throw existingError
 
   const existingByName = new Map()
@@ -166,6 +167,7 @@ async function run() {
       tcg_type_id: tcgTypeId,
       tcg_group_id: row.groupId,
       tcg_category_id: row.categoryId ?? CATEGORY_ID,
+      region: 'EN',
     }
   })
 
@@ -176,7 +178,7 @@ async function run() {
   }
 
   console.log(`Upserting ${setRows.length} sets into pokemon_sets...`)
-  await upsert('pokemon_sets', setRows, 'tcg_type_id,name')
+  await upsert('pokemon_sets', setRows, 'tcg_type_id,name,region')
   console.log('Done.')
 }
 

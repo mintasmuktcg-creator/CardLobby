@@ -105,9 +105,10 @@ async function run() {
   const tcgTypeId = typeRow.id
 
   const { data: existingSets, error: existingError } = await supabase
-    .from('pokemon_japan_sets')
+    .from('pokemon_sets')
     .select('id, name, code, tcg_group_id')
     .eq('tcg_type_id', tcgTypeId)
+    .eq('region', 'JP')
   if (existingError) throw existingError
 
   const existingByName = new Map()
@@ -161,7 +162,7 @@ async function run() {
       console.log(`\nProcessing set ${setName} (${groupId})`)
 
       const { data: setData, error: setErr } = await supabase
-        .from('pokemon_japan_sets')
+        .from('pokemon_sets')
         .upsert(
           {
             name: setName,
@@ -173,8 +174,9 @@ async function run() {
             tcg_type_id: tcgTypeId,
             tcg_group_id: groupId,
             tcg_category_id: CATEGORY_ID,
+            region: 'JP',
           },
-          { onConflict: 'tcg_type_id,name' },
+          { onConflict: 'tcg_type_id,name,region' },
         )
         .select('id')
         .single()
@@ -221,6 +223,7 @@ async function run() {
           external_url: row.url,
           modified_on: row.modifiedOn || null,
           set_id: setId,
+          region: 'JP',
         }
 
         const priceRow = {
@@ -253,7 +256,7 @@ async function run() {
       })
 
       const products = Array.from(productMap.values()).map((entry) => entry.row)
-      await upsert('pokemon_japan_products', products, 'tcg_product_id')
+      await upsert('pokemon_products', products, 'tcg_product_id,region')
 
       console.log(`  Imported ${products.length} products`)
     } catch (err) {

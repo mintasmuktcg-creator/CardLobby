@@ -107,9 +107,10 @@ async function run() {
   const tcgTypeId = await resolveTcgTypeId()
 
   const { data: existingSets, error: existingError } = await supabase
-    .from('pokemon_japan_sets')
+    .from('pokemon_sets')
     .select('id, name, code, tcg_group_id')
     .eq('tcg_type_id', tcgTypeId)
+    .eq('region', 'JP')
   if (existingError) throw existingError
 
   const existingByName = new Map()
@@ -168,6 +169,7 @@ async function run() {
       tcg_type_id: tcgTypeId,
       tcg_group_id: row.groupId,
       tcg_category_id: row.categoryId ?? CATEGORY_ID,
+      region: 'JP',
     }
   })
 
@@ -177,8 +179,8 @@ async function run() {
     return
   }
 
-  console.log(`Upserting ${setRows.length} sets into pokemon_japan_sets...`)
-  await upsert('pokemon_japan_sets', setRows, 'tcg_type_id,name')
+  console.log(`Upserting ${setRows.length} sets into pokemon_sets (JP)...`)
+  await upsert('pokemon_sets', setRows, 'tcg_type_id,name,region')
   console.log('Done.')
 }
 

@@ -15,6 +15,7 @@ type CatalogKey = 'pokemon' | 'pokemon_japan'
 const CATALOGS = {
   pokemon: {
     label: 'Pokemon',
+    region: 'EN',
     setsTable: 'pokemon_sets',
     productsTable: 'pokemon_products',
     embedKey: 'pokemon_sets',
@@ -22,9 +23,10 @@ const CATALOGS = {
   },
   pokemon_japan: {
     label: 'Pokemon Japan',
-    setsTable: 'pokemon_japan_sets',
-    productsTable: 'pokemon_japan_products',
-    embedKey: 'pokemon_japan_sets',
+    region: 'JP',
+    setsTable: 'pokemon_sets',
+    productsTable: 'pokemon_products',
+    embedKey: 'pokemon_sets',
     storageKey: 'cardlobby.selected_set_id.pokemon_japan',
   },
 } as const
@@ -73,10 +75,6 @@ type ProductDbRow = {
   price_updated_at?: string | null
   currency?: string | null
   pokemon_sets?:
-    | { id: string; name: string; code: string | null }
-    | { id: string; name: string; code: string | null }[]
-    | null
-  pokemon_japan_sets?:
     | { id: string; name: string; code: string | null }
     | { id: string; name: string; code: string | null }[]
     | null
@@ -346,10 +344,7 @@ function App() {
   const [pendingScroll, setPendingScroll] = useState<number | null>(null)
   const [authOpen, setAuthOpen] = useState(false)
   const catalogConfig = CATALOGS[catalog]
-  const ownedTable =
-    catalog === 'pokemon_japan'
-      ? 'user_owned_pokemon_japan_products'
-      : 'user_owned_products'
+  const ownedTable = 'user_owned_products'
   const ownedEnabled = true
 
   useEffect(() => {
@@ -403,6 +398,7 @@ function App() {
       const { data, error } = await supabase
         .from(catalogConfig.setsTable)
         .select('*')
+        .eq('region', catalogConfig.region)
         .order('name', { ascending: true })
 
       if (error) {
@@ -519,8 +515,7 @@ function App() {
         if (cancelled) return
 
         const mapped: CardRow[] = all.map((product) => {
-          const embedded =
-            product?.[embedKey as 'pokemon_sets' | 'pokemon_japan_sets'] ?? null
+          const embedded = product?.[embedKey as 'pokemon_sets'] ?? null
           const setEmbed = Array.isArray(embedded) ? embedded[0] ?? null : embedded ?? null
           return {
             productUuid: product?.id ?? null,
@@ -1029,30 +1024,10 @@ function App() {
                 ))}
               </select>
             </div>
-            <div className="sidebar-block">
-              <span className="sidebar-label">Loaded</span>
-              <div className="sidebar-stats">
-                <div className="sidebar-stat">
-                  <span className="sidebar-stat-value">{cards.length}</span>
-                  <span className="sidebar-stat-label">Products</span>
-                </div>
-                <div className="sidebar-stat">
-                  <span className="sidebar-stat-value">{visibleCards.length}</span>
-                  <span className="sidebar-stat-label">Visible</span>
-                </div>
-              </div>
-            </div>
           </div>
         </aside>
         <main className="main-content">
           <div className="page">
-            <h1 className="headline">
-              A Muk-inspired home for trading card buyers, sellers, and collectors.
-            </h1>
-            <p className="lede">
-              Sticky pricing insights, gooey-fast deck building, and collections that
-              stay organized even when the market gets messy.
-            </p>
             <section className="set-hero">
               <div>
                 <div className="pill muted">Set preview</div>
@@ -1382,11 +1357,12 @@ function AdminPortal() {
               {
                 name: setName,
                 code: setCode || null,
+                region: 'EN',
                 tcg_type_id: categoryId,
                 tcg_group_id: tcgGroupId,
                 tcg_category_id: tcgCategoryId,
               },
-              { onConflict: 'code' },
+              { onConflict: 'code,region' },
             )
             .select('id')
             .single()
@@ -1434,6 +1410,7 @@ function AdminPortal() {
               external_url: row.url,
               modified_on: row.modifiedOn || null,
               set_id: setId,
+              region: 'EN',
             }
 
             const priceRow = {
@@ -1475,7 +1452,7 @@ function AdminPortal() {
             })
             const { error } = await supabase
               .from('pokemon_products')
-              .upsert(productChunks[i], { onConflict: 'tcg_product_id' })
+              .upsert(productChunks[i], { onConflict: 'tcg_product_id,region' })
             if (error) throw error
           }
 

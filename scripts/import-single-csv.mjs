@@ -152,8 +152,9 @@ async function run() {
         tcg_type_id: categoryId,
         tcg_group_id: tcgGroupId,
         tcg_category_id: tcgCategoryId,
+        region: 'EN',
       },
-      { onConflict: 'code' },
+      { onConflict: 'code,region' },
     )
     .select('id')
     .single()
@@ -194,6 +195,7 @@ async function run() {
       external_url: row.url,
       modified_on: row.modifiedOn || null,
       set_id: setId,
+      region: 'EN',
     }
 
     const priceRow = {
@@ -226,7 +228,7 @@ async function run() {
   })
 
   const products = Array.from(productMap.values()).map((entry) => entry.row)
-  await upsert('pokemon_products', products, 'tcg_product_id')
+  await upsert('pokemon_products', products, 'tcg_product_id,region')
 
   console.log(`Done. Imported ${products.length} products.`)
 }

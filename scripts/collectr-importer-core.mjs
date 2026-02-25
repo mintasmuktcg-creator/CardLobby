@@ -1218,11 +1218,13 @@ export async function runCollectrImport({ url, supabaseUrl, supabaseKey }) {
   const { data: englishSetRows, error: englishSetErr } = await supabase
     .from('pokemon_sets')
     .select('id, name, name_other')
+    .eq('region', 'EN')
   if (englishSetErr) throw englishSetErr
 
   const { data: japanSetRows, error: japanSetErr } = await supabase
-    .from('pokemon_japan_sets')
+    .from('pokemon_sets')
     .select('id, name, name_other')
+    .eq('region', 'JP')
   if (japanSetErr) throw japanSetErr
 
   const buildSetMap = (rows) => {
@@ -1509,53 +1511,44 @@ export async function runCollectrImport({ url, supabaseUrl, supabaseKey }) {
   const japanIds = Array.from(japanIdSet)
   const productIds = Array.from(new Set([...englishIds, ...japanIds]))
 
-  const getEmbedSelect = (embedKey) => {
-    if (embedKey === 'pokemon_japan_sets') {
-      return `${embedKey}(id, name, name_other, code)`
-    }
-    return `${embedKey}(id, name, code)`
-  }
+  const embedSelect = 'pokemon_sets(id, name, name_other, code, region)'
 
-  const fetchProducts = async (ids, table, embedKey) => {
+  const fetchProducts = async (ids, region) => {
     const rows = []
     const groups = chunk(ids, 400)
-    const embedSelect = getEmbedSelect(embedKey)
     for (const group of groups) {
       const { data, error } = await supabase
-        .from(table)
+        .from('pokemon_products')
         .select(
           `tcg_product_id, name, product_type, card_number, rarity, image_url, market_price, ${embedSelect}`,
         )
         .in('tcg_product_id', group)
+        .eq('region', region)
       if (error) throw error
       if (data) rows.push(...data)
     }
     return rows
   }
 
-  const fetchProductsBySetIds = async (setIds, table, embedKey) => {
+  const fetchProductsBySetIds = async (setIds, region) => {
     const rows = []
     const groups = chunk(setIds, 200)
-    const embedSelect = getEmbedSelect(embedKey)
     for (const group of groups) {
       const { data, error } = await supabase
-        .from(table)
+        .from('pokemon_products')
         .select(
           `tcg_product_id, set_id, name, product_type, card_number, rarity, image_url, market_price, ${embedSelect}`,
         )
         .in('set_id', group)
+        .eq('region', region)
       if (error) throw error
       if (data) rows.push(...data)
     }
     return rows
   }
 
-  const englishRows = englishIds.length
-    ? await fetchProducts(englishIds, 'pokemon_products', 'pokemon_sets')
-    : []
-  const japanRows = japanIds.length
-    ? await fetchProducts(japanIds, 'pokemon_japan_products', 'pokemon_japan_sets')
-    : []
+  const englishRows = englishIds.length ? await fetchProducts(englishIds, 'EN') : []
+  const japanRows = japanIds.length ? await fetchProducts(japanIds, 'JP') : []
 
   const englishLookup = new Map(
     englishRows.map((row) => [row.tcg_product_id, row]),
@@ -1564,13 +1557,7 @@ export async function runCollectrImport({ url, supabaseUrl, supabaseKey }) {
     japanRows.map((row) => [row.tcg_product_id, row]),
   )
 
-  const matchMissingItems = async (
-    items,
-    setMap,
-    table,
-    embedKey,
-    allowPartial = false,
-  ) => {
+  const matchMissingItems = async (items, setMap, region, allowPartial = false) => {
     if (!items.length) return new Map()
     const setIds = new Set()
     const itemSetIds = new Map()
@@ -1585,7 +1572,7 @@ export async function runCollectrImport({ url, supabaseUrl, supabaseKey }) {
     const ids = Array.from(setIds)
     if (!ids.length) return new Map()
 
-    const rows = await fetchProductsBySetIds(ids, table, embedKey)
+    const rows = await fetchProductsBySetIds(ids, region)
     const index = new Map()
     rows.forEach((row) => {
       const numberKey = normalizeCardNumberForMatch(row?.card_number)
@@ -1650,11 +1637,12 @@ export async function runCollectrImport({ url, supabaseUrl, supabaseKey }) {
       }
 
       let query = supabase
-        .from('pokemon_japan_products')
+        .from('pokemon_products')
         .select(
-          'tcg_product_id, set_id, name, product_type, card_number, rarity, image_url, market_price, pokemon_japan_sets(id, name, name_other, code)',
+          'tcg_product_id, set_id, name, product_type, card_number, rarity, image_url, market_price, pokemon_sets(id, name, name_other, code, region)',
         )
         .eq('card_number', rawCardNumber)
+        .eq('region', 'JP')
 
       if (collectrName) {
         query = query.ilike('name', `%${collectrName}%`)
@@ -1662,7 +1650,7 @@ export async function runCollectrImport({ url, supabaseUrl, supabaseKey }) {
       if (collectrSet) {
         query = query.or(
           `name.ilike.%${collectrSet}%,name_other.ilike.%${collectrSet}%`,
-          { foreignTable: 'pokemon_japan_sets' },
+          { foreignTable: 'pokemon_sets' },
         )
       }
 
@@ -1670,7 +1658,7 @@ export async function runCollectrImport({ url, supabaseUrl, supabaseKey }) {
       if (error) throw error
 
       const product = Array.isArray(data) ? data[0] ?? null : null
-      const embedded = product?.pokemon_japan_sets ?? null
+      const embedded = product?.pokemon_sets ?? null
       const setEmbed = Array.isArray(embedded) ? embedded[0] ?? null : embedded ?? null
       const productSet = setEmbed?.name ?? null
       const productSetOther = setEmbed?.name_other ?? null
@@ -1722,8 +1710,7 @@ export async function runCollectrImport({ url, supabaseUrl, supabaseKey }) {
   const missingEnglishLookup = await matchMissingItems(
     missingEnglish,
     englishSetMap,
-    'pokemon_products',
-    'pokemon_sets',
+    'EN',
     true,
   )
   const missingJapanLookup = await matchJapaneseMissingItems([
@@ -1756,7 +1743,7 @@ export async function runCollectrImport({ url, supabaseUrl, supabaseKey }) {
           : null
         if (fallback?.product) {
           product = fallback.product
-          const embeddedFallback = product?.pokemon_japan_sets ?? null
+          const embeddedFallback = product?.pokemon_sets ?? null
           const setFallback = Array.isArray(embeddedFallback)
             ? embeddedFallback[0] ?? null
             : embeddedFallback ?? null
@@ -1778,7 +1765,7 @@ export async function runCollectrImport({ url, supabaseUrl, supabaseKey }) {
       }
 
       if (!japaneseChecks) {
-        const embeddedCurrent = product?.pokemon_japan_sets ?? null
+        const embeddedCurrent = product?.pokemon_sets ?? null
         const setCurrent = Array.isArray(embeddedCurrent)
           ? embeddedCurrent[0] ?? null
           : embeddedCurrent ?? null
@@ -1795,7 +1782,7 @@ export async function runCollectrImport({ url, supabaseUrl, supabaseKey }) {
         })
       }
     }
-    const embedded = isJapanese ? product?.pokemon_japan_sets : product?.pokemon_sets
+    const embedded = product?.pokemon_sets ?? null
     const setEmbed = Array.isArray(embedded) ? embedded[0] ?? null : embedded ?? null
     const productSet = setEmbed?.name ?? null
     results.push({
@@ -1845,7 +1832,7 @@ export async function runCollectrImport({ url, supabaseUrl, supabaseKey }) {
       : lookupKey
         ? lookup.get(lookupKey) || null
         : null
-    const embedded = isJapanese ? product?.pokemon_japan_sets : product?.pokemon_sets
+    const embedded = product?.pokemon_sets ?? null
     const setEmbed = Array.isArray(embedded) ? embedded[0] ?? null : embedded ?? null
     const collectrSet = collectr.setName || null
     const productSet = setEmbed?.name ?? null
