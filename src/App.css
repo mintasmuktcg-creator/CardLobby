@@ -897,6 +897,77 @@
   color: rgba(244, 239, 255, 0.6);
 }
 
+.api-request {
+  padding: 18px;
+  border-radius: 16px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.04);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.api-request-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.api-request-label {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-weight: 600;
+  color: #f6edff;
+}
+
+.api-request-label textarea {
+  resize: vertical;
+  min-height: 140px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.06);
+  color: #f2ecff;
+  font-size: 14px;
+}
+
+.api-request-label textarea:focus-visible {
+  outline: 3px solid rgba(184, 240, 0, 0.45);
+  outline-offset: 2px;
+}
+
+.api-request-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.api-request-locked {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.api-request-success {
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(184, 240, 0, 0.35);
+  background: rgba(184, 240, 0, 0.1);
+  color: #b8f000;
+  font-weight: 600;
+}
+
+.api-request-error {
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 159, 181, 0.35);
+  background: rgba(255, 159, 181, 0.12);
+  color: #ff9fb5;
+  font-weight: 600;
+}
+
 .importer-summary {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));

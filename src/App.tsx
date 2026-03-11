@@ -1,5 +1,5 @@
 ﻿import { useEffect, useLayoutEffect, useMemo, useState } from 'react'
-import type { ChangeEvent } from 'react'
+import type { ChangeEvent, FormEvent } from 'react'
 import Papa from 'papaparse'
 import { supabase } from './lib/supabaseClient'
 import './App.css'
@@ -253,6 +253,16 @@ type CollectrImportResult = {
   } | null
 }
 
+type SupabaseSession = Awaited<
+  ReturnType<typeof supabase.auth.getSession>
+>['data']['session']
+
+type ApiDocsProps = {
+  session: SupabaseSession
+  onSignIn: () => void
+  onSignUp: () => void
+}
+
 const COLLECTR_COLLECTIONS_CACHE_KEY = 'cardlobby.collectr.collections'
 
 type SetInfo = {
@@ -333,9 +343,7 @@ function App() {
   const [password, setPassword] = useState('')
   const [authMode, setAuthMode] = useState<'signin' | 'signup'>('signin')
   const [authMessage, setAuthMessage] = useState<string | null>(null)
-  const [session, setSession] = useState<Awaited<
-    ReturnType<typeof supabase.auth.getSession>
-  >['data']['session']>(null)
+  const [session, setSession] = useState<SupabaseSession>(null)
   const adminEmail = import.meta.env.VITE_ADMIN_EMAIL || ''
   const [path, setPath] = useState(window.location.pathname)
   const [loading, setLoading] = useState(false)
@@ -994,7 +1002,11 @@ function App() {
         <div className="app-body no-sidebar">
           <main className="main-content">
             <div className="page content-narrow">
-              <ApiDocsPage />
+              <ApiDocsPage
+                session={session}
+                onSignIn={() => openAuthModal('signin')}
+                onSignUp={() => openAuthModal('signup')}
+              />
             </div>
           </main>
         </div>
@@ -1857,11 +1869,17 @@ function CollectrImporter() {
   )
 }
 
-function ApiDocsPage() {
+function ApiDocsPage({ session, onSignIn, onSignUp }: ApiDocsProps) {
   const baseUrl = 'https://api.cardlobby.app'
   const sampleKey = 'YOUR_API_KEY'
   const curlHealth = `curl ${baseUrl}/health \\\n  -H "x-api-key: ${sampleKey}"`
   const curlProducts = `curl "${baseUrl}/products?set_name_id=1374&limit=5" \\\n  -H "x-api-key: ${sampleKey}"`
+  const [reason, setReason] = useState('')
+  const [requestStatus, setRequestStatus] = useState<
+    'idle' | 'sending' | 'sent' | 'error'
+  >('idle')
+  const [requestMessage, setRequestMessage] = useState<string | null>(null)
+  const isSignedIn = Boolean(session?.user)
 
   const endpoints = [
     { method: 'GET', path: '/health', description: 'Service health check.' },
@@ -1908,6 +1926,48 @@ function ApiDocsPage() {
     { key: 'limit', desc: 'Page size (history only).', type: 'int' },
     { key: 'offset', desc: 'Offset (history only).', type: 'int' },
   ]
+
+  const submitRequest = async (event: FormEvent) => {
+    event.preventDefault()
+    setRequestMessage(null)
+
+    if (!isSignedIn || !session?.access_token) {
+      setRequestStatus('error')
+      setRequestMessage('Please sign in to request an API key.')
+      return
+    }
+
+    const trimmed = reason.trim()
+    if (trimmed.length < 10) {
+      setRequestStatus('error')
+      setRequestMessage('Please share a brief reason (at least 10 characters).')
+      return
+    }
+
+    setRequestStatus('sending')
+    try {
+      const response = await fetch('/api/request-api-key', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${session.access_token}`,
+        },
+        body: JSON.stringify({ reason: trimmed }),
+      })
+
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok) {
+        throw new Error(payload?.error || payload?.message || 'Request failed.')
+      }
+
+      setRequestStatus('sent')
+      setReason('')
+      setRequestMessage('Request sent. We will reply via email soon.')
+    } catch (err) {
+      setRequestStatus('error')
+      setRequestMessage(formatError(err))
+    }
+  }
 
   return (
     <section className="api-page">
@@ -2056,6 +2116,70 @@ function ApiDocsPage() {
               <p>{filter.desc}</p>
             </div>
           ))}
+        </div>
+      </section>
+
+      <section className="api-section">
+        <div className="api-section-head">
+          <div>
+            <div className="pill muted">Request Access</div>
+            <h2>Request an API key</h2>
+            <p className="swatch-note">
+              You must be signed in to submit a request. We will email you after
+              reviewing your use case.
+            </p>
+          </div>
+        </div>
+        <div className="api-request card-surface">
+          {isSignedIn ? (
+            <form className="api-request-form" onSubmit={submitRequest}>
+              <label className="api-request-label">
+                Reason for API access
+                <textarea
+                  value={reason}
+                  onChange={(event) => setReason(event.target.value)}
+                  placeholder="Tell us how you plan to use the API."
+                  rows={5}
+                  required
+                />
+              </label>
+              <div className="api-request-actions">
+                <button
+                  className="btn primary"
+                  type="submit"
+                  disabled={requestStatus === 'sending'}
+                >
+                  {requestStatus === 'sending' ? 'Sending…' : 'Submit request'}
+                </button>
+                {session?.user?.email && (
+                  <span className="swatch-note">Signed in as {session.user.email}</span>
+                )}
+              </div>
+              {requestMessage && (
+                <div
+                  className={
+                    requestStatus === 'error' ? 'api-request-error' : 'api-request-success'
+                  }
+                >
+                  {requestMessage}
+                </div>
+              )}
+            </form>
+          ) : (
+            <div className="api-request-locked">
+              <p className="swatch-note">
+                Sign in or create an account to request an API key.
+              </p>
+              <div className="cta-row">
+                <button className="btn ghost" onClick={onSignIn}>
+                  Sign in
+                </button>
+                <button className="btn primary" onClick={onSignUp}>
+                  Sign up
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       </section>
     </section>
