@@ -596,13 +596,17 @@ function App() {
     return () => window.removeEventListener('popstate', onPop)
   }, [])
 
+  const normalizedPath =
+    path.length > 1 && path.endsWith('/') ? path.slice(0, -1) : path
+
   const isAdmin =
     !!session?.user?.email &&
     adminEmail.length > 0 &&
     session.user.email.toLowerCase() === adminEmail.toLowerCase()
 
-  const isAdminRoute = path === '/admin'
-  const isCollectrRoute = path === '/collectr-importer'
+  const isAdminRoute = normalizedPath === '/admin'
+  const isCollectrRoute = normalizedPath === '/collectr-importer'
+  const isApiRoute = normalizedPath === '/api'
 
   const go = (to: string) => {
     if (window.location.pathname !== to) {
@@ -791,20 +795,28 @@ function App() {
         </button>
         <div className="topbar-links">
           <button
-            className={path === '/' ? 'topbar-link active' : 'topbar-link'}
+            className={normalizedPath === '/' ? 'topbar-link active' : 'topbar-link'}
             onClick={() => go('/')}
           >
             Browse cards
           </button>
           <button
-            className={path === '/collectr-importer' ? 'topbar-link active' : 'topbar-link'}
+            className={
+              normalizedPath === '/collectr-importer' ? 'topbar-link active' : 'topbar-link'
+            }
             onClick={() => go('/collectr-importer')}
           >
             Collectr Importer
           </button>
+          <button
+            className={isApiRoute ? 'topbar-link active' : 'topbar-link'}
+            onClick={() => go('/api')}
+          >
+            API
+          </button>
           {isAdmin && (
             <button
-              className={path === '/admin' ? 'topbar-link active' : 'topbar-link'}
+              className={normalizedPath === '/admin' ? 'topbar-link active' : 'topbar-link'}
               onClick={() => go('/admin')}
             >
               Admin
@@ -975,6 +987,21 @@ function App() {
     )
   }
 
+  if (isApiRoute) {
+    return (
+      <div className="app-shell">
+        {topbar}
+        <div className="app-body no-sidebar">
+          <main className="main-content">
+            <div className="page content-narrow">
+              <ApiDocsPage />
+            </div>
+          </main>
+        </div>
+        {authModal}
+      </div>
+    )
+  }
 
   const currentSet = sets.find((s) => s.id === selectedSetId) || null
   const setTitle =
@@ -1826,6 +1853,211 @@ function CollectrImporter() {
           })}
         </div>
       </div>
+    </section>
+  )
+}
+
+function ApiDocsPage() {
+  const baseUrl = 'https://api.cardlobby.app'
+  const sampleKey = 'YOUR_API_KEY'
+  const curlHealth = `curl ${baseUrl}/health \\\n  -H "x-api-key: ${sampleKey}"`
+  const curlProducts = `curl "${baseUrl}/products?set_name_id=1374&limit=5" \\\n  -H "x-api-key: ${sampleKey}"`
+
+  const endpoints = [
+    { method: 'GET', path: '/health', description: 'Service health check.' },
+    { method: 'GET', path: '/product-lines', description: 'List product lines.' },
+    { method: 'GET', path: '/sets', description: 'List sets (filterable).' },
+    { method: 'GET', path: '/lookups/conditions', description: 'List conditions.' },
+    { method: 'GET', path: '/lookups/rarities', description: 'List rarities.' },
+    { method: 'GET', path: '/lookups/printings', description: 'List printings.' },
+    { method: 'GET', path: '/products', description: 'Search products + variants.' },
+    {
+      method: 'GET',
+      path: '/products/:productId/variants',
+      description: 'All variants for a product.',
+    },
+    { method: 'GET', path: '/prices/latest', description: 'Latest price for a variant.' },
+    { method: 'GET', path: '/prices/history', description: 'Price history for a variant.' },
+    { method: 'GET', path: '/script-runs', description: 'Job run history.' },
+  ]
+
+  const productFilters = [
+    { key: 'set_name_id', desc: 'Filter products by set id (from set-<id>.json).', type: 'int' },
+    { key: 'product_id', desc: 'Exact product id (tcg product id).', type: 'int' },
+    { key: 'product_name', desc: 'Case-insensitive match (partial).', type: 'string' },
+    { key: 'rarity', desc: 'Exact rarity name (case-insensitive).', type: 'string' },
+    { key: 'printing', desc: 'Exact printing name (case-insensitive).', type: 'string' },
+    { key: 'condition', desc: 'Exact condition name (case-insensitive).', type: 'string' },
+    { key: 'limit', desc: 'Page size (max 500).', type: 'int' },
+    { key: 'offset', desc: 'Offset for pagination.', type: 'int' },
+  ]
+
+  const setFilters = [
+    { key: 'product_line_id', desc: 'Filter by product line id.', type: 'int' },
+    { key: 'active', desc: 'true | false', type: 'bool' },
+    { key: 'name', desc: 'Partial match on set name.', type: 'string' },
+  ]
+
+  const priceFilters = [
+    { key: 'product_id', desc: 'Product id.', type: 'int' },
+    { key: 'condition_id', desc: 'Condition id.', type: 'int' },
+    { key: 'rarity_id', desc: 'Rarity id.', type: 'int' },
+    { key: 'printing_id', desc: 'Printing id.', type: 'int' },
+    { key: 'start', desc: 'Start date YYYY-MM-DD (history only).', type: 'date' },
+    { key: 'end', desc: 'End date YYYY-MM-DD (history only).', type: 'date' },
+    { key: 'limit', desc: 'Page size (history only).', type: 'int' },
+    { key: 'offset', desc: 'Offset (history only).', type: 'int' },
+  ]
+
+  return (
+    <section className="api-page">
+      <div className="api-hero card-surface">
+        <div className="pill">Card Lobby API</div>
+        <h1 className="headline">CardHQ public API</h1>
+        <p className="lede">
+          Query Pokemon products, sets, and daily price history. Built for fast lookups
+          and clean client-side integration.
+        </p>
+        <div className="api-hero-meta">
+          <div className="api-meta-card">
+            <span className="api-meta-label">Base URL</span>
+            <code>{baseUrl}</code>
+          </div>
+          <div className="api-meta-card">
+            <span className="api-meta-label">Auth</span>
+            <code>x-api-key</code>
+          </div>
+          <div className="api-meta-card">
+            <span className="api-meta-label">Rate limits</span>
+            <span>Per key, per minute (VIP keys can be unlimited).</span>
+          </div>
+        </div>
+      </div>
+
+      <div className="api-grid">
+        <div className="api-card">
+          <div className="pill muted">Quickstart</div>
+          <h2>Test the API</h2>
+          <div className="api-code">
+            <pre>
+              <code>{curlHealth}</code>
+            </pre>
+          </div>
+          <div className="api-code">
+            <pre>
+              <code>{curlProducts}</code>
+            </pre>
+          </div>
+        </div>
+        <div className="api-card">
+          <div className="pill muted">Authentication</div>
+          <h2>Send your API key</h2>
+          <p className="swatch-note">
+            Use <code>x-api-key</code> or <code>Authorization: Bearer</code>. If the
+            key is missing or inactive, you will receive a 401.
+          </p>
+          <div className="api-callout">
+            <div>
+              <strong>Headers returned</strong>
+              <p className="swatch-note">
+                X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Reset
+              </p>
+            </div>
+            <div>
+              <strong>Errors</strong>
+              <p className="swatch-note">401 Unauthorized, 429 Rate limit exceeded</p>
+            </div>
+          </div>
+        </div>
+        <div className="api-card">
+          <div className="pill muted">Pagination</div>
+          <h2>limit + offset</h2>
+          <p className="swatch-note">
+            Most list endpoints accept <code>limit</code> and <code>offset</code>.
+            Maximum limit is 500.
+          </p>
+        </div>
+      </div>
+
+      <section className="api-section">
+        <div className="api-section-head">
+          <div>
+            <div className="pill muted">Reference</div>
+            <h2>Endpoints</h2>
+            <p className="swatch-note">All endpoints are read-only (GET).</p>
+          </div>
+        </div>
+        <div className="api-endpoints">
+          {endpoints.map((endpoint) => (
+            <div key={endpoint.path} className="api-endpoint">
+              <div className="api-endpoint-row">
+                <span className="api-method">{endpoint.method}</span>
+                <code>{endpoint.path}</code>
+              </div>
+              <p className="swatch-note">{endpoint.description}</p>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      <section className="api-section">
+        <div className="api-section-head">
+          <div>
+            <div className="pill muted">Filters</div>
+            <h2>/products</h2>
+            <p className="swatch-note">
+              Use filters to narrow down products by set, rarity, printing, and condition.
+            </p>
+          </div>
+        </div>
+        <div className="api-param-grid">
+          {productFilters.map((filter) => (
+            <div key={filter.key} className="api-param">
+              <code>{filter.key}</code>
+              <span className="api-param-type">{filter.type}</span>
+              <p>{filter.desc}</p>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      <section className="api-section">
+        <div className="api-section-head">
+          <div>
+            <div className="pill muted">Filters</div>
+            <h2>/sets</h2>
+            <p className="swatch-note">Filter by product line, status, or name.</p>
+          </div>
+        </div>
+        <div className="api-param-grid">
+          {setFilters.map((filter) => (
+            <div key={filter.key} className="api-param">
+              <code>{filter.key}</code>
+              <span className="api-param-type">{filter.type}</span>
+              <p>{filter.desc}</p>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      <section className="api-section">
+        <div className="api-section-head">
+          <div>
+            <div className="pill muted">Filters</div>
+            <h2>/prices/history</h2>
+            <p className="swatch-note">Price history requires a specific variant.</p>
+          </div>
+        </div>
+        <div className="api-param-grid">
+          {priceFilters.map((filter) => (
+            <div key={filter.key} className="api-param">
+              <code>{filter.key}</code>
+              <span className="api-param-type">{filter.type}</span>
+              <p>{filter.desc}</p>
+            </div>
+          ))}
+        </div>
+      </section>
     </section>
   )
 }
