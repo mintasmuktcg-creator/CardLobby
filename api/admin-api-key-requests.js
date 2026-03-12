@@ -5,7 +5,12 @@ const SUPABASE_URL = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY
 const SUPABASE_AUTH_KEY = SUPABASE_SERVICE_ROLE_KEY || SUPABASE_ANON_KEY
-const ADMIN_EMAIL = process.env.ADMIN_EMAIL || process.env.VITE_ADMIN_EMAIL || ''
+const ADMIN_USER_IDS = new Set(
+  String(process.env.ADMIN_USER_IDS || process.env.ADMIN_USER_ID || '')
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean),
+)
 const API_KEY_PEPPER = process.env.API_KEY_PEPPER || ''
 
 const DEFAULT_RATE_LIMIT = 120
@@ -69,8 +74,8 @@ async function requireAdminUser(req) {
   if (!SUPABASE_URL || !SUPABASE_AUTH_KEY) {
     throw new Error('Supabase env vars are missing.')
   }
-  if (!ADMIN_EMAIL) {
-    throw new Error('Admin email is not configured.')
+  if (ADMIN_USER_IDS.size === 0) {
+    throw new Error('ADMIN_USER_IDS is not configured.')
   }
 
   const token = extractToken(req)
@@ -90,8 +95,7 @@ async function requireAdminUser(req) {
     throw err
   }
 
-  const email = String(data.user.email || '').toLowerCase()
-  if (email !== String(ADMIN_EMAIL).toLowerCase()) {
+  if (!ADMIN_USER_IDS.has(String(data.user.id || ''))) {
     const err = new Error('Forbidden.')
     err.status = 403
     throw err

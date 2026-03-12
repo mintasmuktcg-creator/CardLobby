@@ -366,7 +366,8 @@ function App() {
   const [authMode, setAuthMode] = useState<'signin' | 'signup'>('signin')
   const [authMessage, setAuthMessage] = useState<string | null>(null)
   const [session, setSession] = useState<SupabaseSession>(null)
-  const adminEmail = import.meta.env.VITE_ADMIN_EMAIL || ''
+  const [isAdmin, setIsAdmin] = useState(false)
+  const [adminCheckLoading, setAdminCheckLoading] = useState(false)
   const [path, setPath] = useState(window.location.pathname)
   const [loading, setLoading] = useState(false)
   const [ownedCounts, setOwnedCounts] = useState<Record<string, number>>({})
@@ -621,6 +622,47 @@ function App() {
   }, [session])
 
   useEffect(() => {
+    let cancelled = false
+
+    const loadAdminStatus = async () => {
+      if (!session?.access_token) {
+        setIsAdmin(false)
+        setAdminCheckLoading(false)
+        return
+      }
+
+      setAdminCheckLoading(true)
+      try {
+        const response = await fetch('/api/admin-auth', {
+          method: 'GET',
+          headers: {
+            Authorization: `Bearer ${session.access_token}`,
+          },
+        })
+        if (!response.ok) {
+          if (!cancelled) setIsAdmin(false)
+          return
+        }
+
+        const payload = await response.json().catch(() => ({}))
+        if (!cancelled) {
+          setIsAdmin(Boolean(payload?.isAdmin))
+        }
+      } catch {
+        if (!cancelled) setIsAdmin(false)
+      } finally {
+        if (!cancelled) setAdminCheckLoading(false)
+      }
+    }
+
+    void loadAdminStatus()
+
+    return () => {
+      cancelled = true
+    }
+  }, [session?.access_token])
+
+  useEffect(() => {
     const onPop = () => setPath(window.location.pathname)
     window.addEventListener('popstate', onPop)
     return () => window.removeEventListener('popstate', onPop)
@@ -628,11 +670,6 @@ function App() {
 
   const normalizedPath =
     path.length > 1 && path.endsWith('/') ? path.slice(0, -1) : path
-
-  const isAdmin =
-    !!session?.user?.email &&
-    adminEmail.length > 0 &&
-    session.user.email.toLowerCase() === adminEmail.toLowerCase()
 
   const isAdminRoute = normalizedPath === '/admin'
   const isCollectrRoute = normalizedPath === '/collectr-importer'
@@ -982,12 +1019,25 @@ function App() {
         <div className="app-body no-sidebar">
           <main className="main-content">
             <div className="page content-narrow">
-              {!session || !isAdmin ? (
+              {!session ? (
                 <div className="card-surface denial">
                   <div className="pill muted">Access denied</div>
                   <p>You must be signed in as the admin to view this page.</p>
                   <button className="btn primary" onClick={() => go('/')}>
                     Go to sign in
+                  </button>
+                </div>
+              ) : adminCheckLoading ? (
+                <div className="card-surface denial">
+                  <div className="pill muted">Checking access</div>
+                  <p>Verifying admin permissions...</p>
+                </div>
+              ) : !isAdmin ? (
+                <div className="card-surface denial">
+                  <div className="pill muted">Access denied</div>
+                  <p>You must be signed in as the admin to view this page.</p>
+                  <button className="btn primary" onClick={() => go('/')}>
+                    Go back
                   </button>
                 </div>
               ) : (
