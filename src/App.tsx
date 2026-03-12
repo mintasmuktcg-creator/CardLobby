@@ -1962,7 +1962,7 @@ function ApiDocsPage({ session, onSignIn, onSignUp }: ApiDocsProps) {
 
       setRequestStatus('sent')
       setReason('')
-      setRequestMessage('Request sent. We will reply via email soon.')
+      setRequestMessage('Request submitted. We will review it soon.')
     } catch (err) {
       setRequestStatus('error')
       setRequestMessage(formatError(err))
@@ -2125,8 +2125,8 @@ function ApiDocsPage({ session, onSignIn, onSignUp }: ApiDocsProps) {
             <div className="pill muted">Request Access</div>
             <h2>Request an API key</h2>
             <p className="swatch-note">
-              You must be signed in to submit a request. We will email you after
-              reviewing your use case.
+              You must be signed in to submit a request. We will review it and
+              follow up using your account email.
             </p>
           </div>
         </div>

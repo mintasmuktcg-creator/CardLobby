@@ -6,11 +6,6 @@ const SUPABASE_KEY =
   process.env.SUPABASE_ANON_KEY ||
   process.env.VITE_SUPABASE_ANON_KEY
 
-const RESEND_API_KEY = process.env.RESEND_API_KEY
-const EMAIL_TO = process.env.API_KEY_REQUEST_TO || 'MintAsMukTCG@gmail.com'
-const EMAIL_FROM =
-  process.env.API_KEY_REQUEST_FROM || 'Card Lobby <api@cardlobby.app>'
-
 const MIN_REASON_LENGTH = 10
 const MAX_REASON_LENGTH = 2000
 
@@ -28,31 +23,6 @@ const extractToken = (req) => {
     return header.slice(7).trim()
   }
   return null
-}
-
-const sendEmail = async ({ subject, text }) => {
-  if (!RESEND_API_KEY) {
-    throw new Error('Missing RESEND_API_KEY.')
-  }
-
-  const response = await fetch('https://api.resend.com/emails', {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${RESEND_API_KEY}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      from: EMAIL_FROM,
-      to: [EMAIL_TO],
-      subject,
-      text,
-    }),
-  })
-
-  if (!response.ok) {
-    const details = await response.text().catch(() => '')
-    throw new Error(details || 'Email provider returned an error.')
-  }
 }
 
 export default async function handler(req, res) {
@@ -107,23 +77,20 @@ export default async function handler(req, res) {
     req.socket?.remoteAddress ||
     'unknown'
 
-  const subject = `Card Lobby API key request — ${data.user.email || data.user.id}`
-  const text = [
-    'Card Lobby API key request',
-    '',
-    `Email: ${data.user.email || 'unknown'}`,
-    `User ID: ${data.user.id}`,
-    `Submitted: ${new Date().toISOString()}`,
-    `IP: ${ip}`,
-    '',
-    'Reason:',
-    reason,
-  ].join('\n')
-
   try {
-    await sendEmail({ subject, text })
-  } catch (mailError) {
-    res.status(502).json({ error: mailError.message || 'Failed to send email.' })
+    const { error: insertError } = await supabase.from('api_key_requests').insert({
+      user_id: data.user.id,
+      email: data.user.email || null,
+      reason,
+      source_ip: ip,
+      user_agent: req.headers['user-agent'] || null,
+    })
+
+    if (insertError) {
+      throw insertError
+    }
+  } catch (dbError) {
+    res.status(500).json({ error: dbError.message || 'Failed to save request.' })
     return
   }
 
