@@ -263,6 +263,28 @@ type ApiDocsProps = {
   onSignUp: () => void
 }
 
+type ApiKeyRequestStatus = 'pending' | 'approved' | 'denied'
+
+type ApiKeyRequestRecord = {
+  request_id: string
+  user_id: string | null
+  email: string | null
+  reason: string
+  status: ApiKeyRequestStatus
+  source_ip: string | null
+  user_agent: string | null
+  created_at: string
+  reviewed_at: string | null
+  reviewed_by: string | null
+  admin_notes: string | null
+  api_key_id: string | null
+  issued_api_key: string | null
+}
+
+type AdminPortalProps = {
+  session: SupabaseSession
+}
+
 const COLLECTR_COLLECTIONS_CACHE_KEY = 'cardlobby.collectr.collections'
 
 type SetInfo = {
@@ -969,7 +991,7 @@ function App() {
                   </button>
                 </div>
               ) : (
-                <AdminPortal />
+                <AdminPortal session={session} />
               )}
             </div>
           </main>
@@ -1356,7 +1378,7 @@ function App() {
 
 export default App
 
-function AdminPortal() {
+function AdminPortal({ session }: AdminPortalProps) {
   const [file, setFile] = useState<File | null>(null)
   const [status, setStatus] = useState<UploadStatus>({ state: 'idle' })
   const [tcgTypeName, setTcgTypeName] = useState('Pokemon TCG')
@@ -1508,58 +1530,293 @@ function AdminPortal() {
   }
 
   return (
+    <div className="admin-stack">
+      <div className="admin-panel card-surface">
+        <div className="admin-panel-head">
+          <div>
+            <div className="pill">CSV import</div>
+            <h2>Upload TCG CSV</h2>
+            <p className="swatch-note">
+              Maps CSV rows to Supabase `pokemon_products` with current prices. Only admin can run.
+            </p>
+          </div>
+          <div className="admin-actions">
+            <input
+              type="text"
+              value={tcgTypeName}
+              onChange={(e) => setTcgTypeName(e.target.value)}
+              placeholder="TCG type name"
+            />
+            <input
+              type="text"
+              value={setName}
+              onChange={(e) => setSetName(e.target.value)}
+              placeholder="Set name"
+            />
+            <input
+              type="text"
+              value={setCode}
+              onChange={(e) => setSetCode(e.target.value)}
+              placeholder="Set code"
+            />
+            <label className="toggle">
+              <input
+                type="checkbox"
+                checked={replaceProducts}
+                onChange={(e) => setReplaceProducts(e.target.checked)}
+              />
+              Replace products in set
+            </label>
+            <input
+              type="file"
+              accept=".csv,text/csv"
+              onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+            />
+            <button className="btn primary" onClick={handleUpload} disabled={!file || status.state === 'uploading'}>
+              {status.state === 'uploading' ? 'Uploading…' : 'Start import'}
+            </button>
+          </div>
+        </div>
+        <div className="admin-status">
+          {status.state === 'idle' && <span>Choose a CSV to begin.</span>}
+          {status.state === 'parsing' && <span>Parsing CSV…</span>}
+          {status.state === 'uploading' && <span>{status.progress}</span>}
+          {status.state === 'done' && <span className="success">{status.message}</span>}
+          {status.state === 'error' && <span className="error">{status.message}</span>}
+        </div>
+      </div>
+      <ApiKeyRequestsAdmin session={session} />
+    </div>
+  )
+}
+
+function ApiKeyRequestsAdmin({ session }: { session: SupabaseSession }) {
+  const [requests, setRequests] = useState<ApiKeyRequestRecord[]>([])
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [busyRequestId, setBusyRequestId] = useState<string | null>(null)
+  const [actionMessage, setActionMessage] = useState<string | null>(null)
+  const [noteDrafts, setNoteDrafts] = useState<Record<string, string>>({})
+  const [rateDrafts, setRateDrafts] = useState<Record<string, string>>({})
+  const [unlimitedDrafts, setUnlimitedDrafts] = useState<Record<string, boolean>>({})
+
+  const loadRequests = async () => {
+    if (!session?.access_token) return
+    setLoading(true)
+    setError(null)
+    try {
+      const response = await fetch('/api/admin-api-key-requests', {
+        method: 'GET',
+        headers: {
+          Authorization: `Bearer ${session.access_token}`,
+        },
+      })
+
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok) {
+        throw new Error(payload?.error || payload?.message || 'Failed to load requests.')
+      }
+
+      const nextRequests = Array.isArray(payload?.requests)
+        ? (payload.requests as ApiKeyRequestRecord[])
+        : []
+      setRequests(nextRequests)
+    } catch (err) {
+      setError(formatError(err))
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    void loadRequests()
+  }, [session?.access_token])
+
+  const runAction = async (requestId: string, action: 'approve' | 'deny') => {
+    if (!session?.access_token) return
+    setBusyRequestId(requestId)
+    setError(null)
+    setActionMessage(null)
+
+    const rateRaw = String(rateDrafts[requestId] || '').trim()
+    const isUnlimited = !!unlimitedDrafts[requestId]
+    const rateLimitPerMin = rateRaw.length > 0 ? Number(rateRaw) : null
+    if (
+      action === 'approve' &&
+      !isUnlimited &&
+      rateRaw.length > 0 &&
+      (!Number.isFinite(rateLimitPerMin) || (rateLimitPerMin as number) <= 0)
+    ) {
+      setBusyRequestId(null)
+      setError('Rate limit must be a positive number.')
+      return
+    }
+
+    try {
+      const response = await fetch('/api/admin-api-key-requests', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${session.access_token}`,
+        },
+        body: JSON.stringify({
+          requestId,
+          action,
+          adminNotes: noteDrafts[requestId] || '',
+          isUnlimited,
+          rateLimitPerMin:
+            action === 'approve'
+              ? isUnlimited
+                ? null
+                : rateRaw.length > 0
+                  ? Number(rateRaw)
+                  : 120
+              : null,
+        }),
+      })
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok) {
+        throw new Error(payload?.error || payload?.message || 'Action failed.')
+      }
+
+      setActionMessage(
+        action === 'approve'
+          ? 'Request approved and API key generated.'
+          : 'Request denied.',
+      )
+      await loadRequests()
+    } catch (err) {
+      setError(formatError(err))
+    } finally {
+      setBusyRequestId(null)
+    }
+  }
+
+  const pendingCount = requests.filter((row) => row.status === 'pending').length
+
+  const formatDateTime = (value?: string | null) => {
+    if (!value) return '-'
+    const parsed = new Date(value)
+    if (Number.isNaN(parsed.getTime())) return value
+    return parsed.toLocaleString()
+  }
+
+  return (
     <div className="admin-panel card-surface">
       <div className="admin-panel-head">
         <div>
-          <div className="pill">CSV import</div>
-          <h2>Upload TCG CSV</h2>
+          <div className="pill">API key requests</div>
+          <h2>Review API access requests</h2>
           <p className="swatch-note">
-            Maps CSV rows to Supabase `pokemon_products` with current prices. Only admin can run.
+            Pending: {pendingCount} · Total requests: {requests.length}
           </p>
         </div>
         <div className="admin-actions">
-          <input
-            type="text"
-            value={tcgTypeName}
-            onChange={(e) => setTcgTypeName(e.target.value)}
-            placeholder="TCG type name"
-          />
-          <input
-            type="text"
-            value={setName}
-            onChange={(e) => setSetName(e.target.value)}
-            placeholder="Set name"
-          />
-          <input
-            type="text"
-            value={setCode}
-            onChange={(e) => setSetCode(e.target.value)}
-            placeholder="Set code"
-          />
-          <label className="toggle">
-            <input
-              type="checkbox"
-              checked={replaceProducts}
-              onChange={(e) => setReplaceProducts(e.target.checked)}
-            />
-            Replace products in set
-          </label>
-          <input
-            type="file"
-            accept=".csv,text/csv"
-            onChange={(e) => setFile(e.target.files?.[0] ?? null)}
-          />
-          <button className="btn primary" onClick={handleUpload} disabled={!file || status.state === 'uploading'}>
-            {status.state === 'uploading' ? 'Uploading…' : 'Start import'}
+          <button className="btn ghost" onClick={() => void loadRequests()} disabled={loading}>
+            {loading ? 'Refreshing…' : 'Refresh'}
           </button>
         </div>
       </div>
+
       <div className="admin-status">
-        {status.state === 'idle' && <span>Choose a CSV to begin.</span>}
-        {status.state === 'parsing' && <span>Parsing CSV…</span>}
-        {status.state === 'uploading' && <span>{status.progress}</span>}
-        {status.state === 'done' && <span className="success">{status.message}</span>}
-        {status.state === 'error' && <span className="error">{status.message}</span>}
+        {error && <span className="error">{error}</span>}
+        {!error && actionMessage && <span className="success">{actionMessage}</span>}
+        {!error && !actionMessage && loading && <span>Loading requests…</span>}
+        {!error && !actionMessage && !loading && requests.length === 0 && (
+          <span>No API key requests yet.</span>
+        )}
+      </div>
+
+      <div className="api-admin-list">
+        {requests.map((request) => {
+          const isBusy = busyRequestId === request.request_id
+          return (
+            <article key={request.request_id} className="api-admin-item">
+              <div className="api-admin-item-head">
+                <div className="pill muted">{request.status.toUpperCase()}</div>
+                <span className="swatch-note">
+                  Requested {formatDateTime(request.created_at)}
+                </span>
+              </div>
+              <div className="api-admin-meta">
+                <strong>{request.email || request.user_id || 'Unknown user'}</strong>
+                <span>Request ID: {request.request_id}</span>
+              </div>
+              <p className="api-admin-reason">{request.reason}</p>
+
+              {request.status === 'approved' && request.issued_api_key && (
+                <div className="api-admin-key">
+                  <span className="swatch-note">Issued API key</span>
+                  <code>{request.issued_api_key}</code>
+                </div>
+              )}
+
+              {request.admin_notes && (
+                <p className="swatch-note">Admin notes: {request.admin_notes}</p>
+              )}
+
+              {request.status === 'pending' && (
+                <div className="api-admin-actions">
+                  <input
+                    type="number"
+                    min="1"
+                    placeholder="Rate limit / min (default 120)"
+                    value={rateDrafts[request.request_id] || ''}
+                    onChange={(event) =>
+                      setRateDrafts((prev) => ({
+                        ...prev,
+                        [request.request_id]: event.target.value,
+                      }))
+                    }
+                    disabled={isBusy}
+                  />
+                  <label className="toggle">
+                    <input
+                      type="checkbox"
+                      checked={!!unlimitedDrafts[request.request_id]}
+                      onChange={(event) =>
+                        setUnlimitedDrafts((prev) => ({
+                          ...prev,
+                          [request.request_id]: event.target.checked,
+                        }))
+                      }
+                      disabled={isBusy}
+                    />
+                    Unlimited
+                  </label>
+                  <textarea
+                    rows={2}
+                    placeholder="Admin notes (optional)"
+                    value={noteDrafts[request.request_id] || ''}
+                    onChange={(event) =>
+                      setNoteDrafts((prev) => ({
+                        ...prev,
+                        [request.request_id]: event.target.value,
+                      }))
+                    }
+                    disabled={isBusy}
+                  />
+                  <div className="api-admin-action-row">
+                    <button
+                      className="btn primary"
+                      onClick={() => void runAction(request.request_id, 'approve')}
+                      disabled={isBusy}
+                    >
+                      {isBusy ? 'Processing…' : 'Approve + Generate Key'}
+                    </button>
+                    <button
+                      className="btn ghost"
+                      onClick={() => void runAction(request.request_id, 'deny')}
+                      disabled={isBusy}
+                    >
+                      Deny
+                    </button>
+                  </div>
+                </div>
+              )}
+            </article>
+          )
+        })}
       </div>
     </div>
   )
@@ -1879,6 +2136,8 @@ function ApiDocsPage({ session, onSignIn, onSignUp }: ApiDocsProps) {
     'idle' | 'sending' | 'sent' | 'error'
   >('idle')
   const [requestMessage, setRequestMessage] = useState<string | null>(null)
+  const [requestRecord, setRequestRecord] = useState<ApiKeyRequestRecord | null>(null)
+  const [requestLoading, setRequestLoading] = useState(false)
   const isSignedIn = Boolean(session?.user)
 
   const endpoints = [
@@ -1927,6 +2186,36 @@ function ApiDocsPage({ session, onSignIn, onSignUp }: ApiDocsProps) {
     { key: 'offset', desc: 'Offset (history only).', type: 'int' },
   ]
 
+  const loadRequestStatus = async () => {
+    if (!isSignedIn || !session?.access_token) {
+      setRequestRecord(null)
+      return
+    }
+    setRequestLoading(true)
+    try {
+      const response = await fetch('/api/request-api-key', {
+        method: 'GET',
+        headers: {
+          Authorization: `Bearer ${session.access_token}`,
+        },
+      })
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok) {
+        throw new Error(payload?.error || payload?.message || 'Failed to load request status.')
+      }
+      setRequestRecord(payload?.request || null)
+    } catch (err) {
+      setRequestMessage(formatError(err))
+      setRequestStatus('error')
+    } finally {
+      setRequestLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    void loadRequestStatus()
+  }, [isSignedIn, session?.access_token])
+
   const submitRequest = async (event: FormEvent) => {
     event.preventDefault()
     setRequestMessage(null)
@@ -1962,7 +2251,12 @@ function ApiDocsPage({ session, onSignIn, onSignUp }: ApiDocsProps) {
 
       setRequestStatus('sent')
       setReason('')
-      setRequestMessage('Request submitted. We will review it soon.')
+      setRequestRecord(payload?.request || null)
+      setRequestMessage(
+        payload?.existing
+          ? payload?.message || 'You already have a request on file.'
+          : 'Request submitted. We will review it soon.',
+      )
     } catch (err) {
       setRequestStatus('error')
       setRequestMessage(formatError(err))
@@ -2132,39 +2426,89 @@ function ApiDocsPage({ session, onSignIn, onSignUp }: ApiDocsProps) {
         </div>
         <div className="api-request card-surface">
           {isSignedIn ? (
-            <form className="api-request-form" onSubmit={submitRequest}>
-              <label className="api-request-label">
-                Reason for API access
-                <textarea
-                  value={reason}
-                  onChange={(event) => setReason(event.target.value)}
-                  placeholder="Tell us how you plan to use the API."
-                  rows={5}
-                  required
-                />
-              </label>
-              <div className="api-request-actions">
-                <button
-                  className="btn primary"
-                  type="submit"
-                  disabled={requestStatus === 'sending'}
-                >
-                  {requestStatus === 'sending' ? 'Sending…' : 'Submit request'}
-                </button>
-                {session?.user?.email && (
-                  <span className="swatch-note">Signed in as {session.user.email}</span>
+            <>
+              <div className="api-request-status">
+                {requestLoading ? (
+                  <p className="swatch-note">Loading your request status…</p>
+                ) : requestRecord ? (
+                  <>
+                    <div className="api-request-status-head">
+                      <span className="swatch-note">Current request status</span>
+                      <span className={`pill ${requestRecord.status === 'approved' ? 'success' : requestRecord.status === 'denied' ? 'warning' : 'muted'}`}>
+                        {requestRecord.status.toUpperCase()}
+                      </span>
+                    </div>
+                    <p className="swatch-note">
+                      Submitted: {new Date(requestRecord.created_at).toLocaleString()}
+                    </p>
+                    {requestRecord.admin_notes && (
+                      <p className="swatch-note">Admin notes: {requestRecord.admin_notes}</p>
+                    )}
+                    {requestRecord.status === 'approved' && requestRecord.issued_api_key && (
+                      <div className="api-request-key">
+                        <span className="swatch-note">Your API key</span>
+                        <code>{requestRecord.issued_api_key}</code>
+                      </div>
+                    )}
+                  </>
+                ) : (
+                  <p className="swatch-note">No API key request submitted yet.</p>
                 )}
               </div>
-              {requestMessage && (
-                <div
-                  className={
-                    requestStatus === 'error' ? 'api-request-error' : 'api-request-success'
-                  }
-                >
-                  {requestMessage}
-                </div>
+
+              {!requestRecord ? (
+                <form className="api-request-form" onSubmit={submitRequest}>
+                  <label className="api-request-label">
+                    Reason for API access
+                    <textarea
+                      value={reason}
+                      onChange={(event) => setReason(event.target.value)}
+                      placeholder="Tell us how you plan to use the API."
+                      rows={5}
+                      required
+                    />
+                  </label>
+                  <div className="api-request-actions">
+                    <button
+                      className="btn primary"
+                      type="submit"
+                      disabled={requestStatus === 'sending'}
+                    >
+                      {requestStatus === 'sending' ? 'Sending…' : 'Submit request'}
+                    </button>
+                    {session?.user?.email && (
+                      <span className="swatch-note">Signed in as {session.user.email}</span>
+                    )}
+                  </div>
+                  {requestMessage && (
+                    <div
+                      className={
+                        requestStatus === 'error' ? 'api-request-error' : 'api-request-success'
+                      }
+                    >
+                      {requestMessage}
+                    </div>
+                  )}
+                </form>
+              ) : (
+                <>
+                  <div className="api-request-locked">
+                    <p className="swatch-note">
+                      You can only submit one API key request per account.
+                    </p>
+                  </div>
+                  {requestMessage && (
+                    <div
+                      className={
+                        requestStatus === 'error' ? 'api-request-error' : 'api-request-success'
+                      }
+                    >
+                      {requestMessage}
+                    </div>
+                  )}
+                </>
               )}
-            </form>
+            </>
           ) : (
             <div className="api-request-locked">
               <p className="swatch-note">

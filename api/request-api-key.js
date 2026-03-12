@@ -4,6 +4,8 @@ const SUPABASE_URL = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY
 const SUPABASE_AUTH_KEY = SUPABASE_SERVICE_ROLE_KEY || SUPABASE_ANON_KEY
+const REQUEST_COLUMNS =
+  'request_id, user_id, email, reason, status, source_ip, user_agent, created_at, reviewed_at, admin_notes, api_key_id, issued_api_key'
 
 const MIN_REASON_LENGTH = 10
 const MAX_REASON_LENGTH = 2000
@@ -24,10 +26,20 @@ const extractToken = (req) => {
   return null
 }
 
+const getSupabaseErrorMessage = (err, fallback) => {
+  if (!err) return fallback
+  if (typeof err === 'string') return err
+  if (typeof err === 'object') {
+    if (typeof err.message === 'string' && err.message) return err.message
+    if (typeof err.error === 'string' && err.error) return err.error
+  }
+  return fallback
+}
+
 export default async function handler(req, res) {
   res.setHeader('Cache-Control', 'no-store')
 
-  if (req.method !== 'POST') {
+  if (req.method !== 'GET' && req.method !== 'POST') {
     res.status(405).json({ error: 'Method not allowed' })
     return
   }
@@ -53,52 +65,107 @@ export default async function handler(req, res) {
     return
   }
 
-  let body = {}
   try {
-    body = getJsonBody(req)
-  } catch {
-    res.status(400).json({ error: 'Invalid JSON payload.' })
-    return
-  }
-
-  const reason = String(body?.reason || '').trim()
-  if (reason.length < MIN_REASON_LENGTH) {
-    res.status(400).json({ error: 'Reason is too short.' })
-    return
-  }
-  if (reason.length > MAX_REASON_LENGTH) {
-    res.status(400).json({ error: 'Reason is too long.' })
-    return
-  }
-
-  const ip =
-    (req.headers['x-forwarded-for'] || '').toString().split(',')[0].trim() ||
-    req.socket?.remoteAddress ||
-    'unknown'
-
-  try {
-    const insertClient = SUPABASE_ANON_KEY
+    const readClient = SUPABASE_ANON_KEY
       ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
           auth: { persistSession: false, autoRefreshToken: false },
           global: { headers: { Authorization: `Bearer ${token}` } },
         })
       : authClient
 
-    const { error: insertError } = await insertClient.from('api_key_requests').insert({
-      user_id: data.user.id,
-      email: data.user.email || null,
-      reason,
-      source_ip: ip,
-      user_agent: req.headers['user-agent'] || null,
-    })
+    const { data: existingRequest, error: existingError } = await readClient
+      .from('api_key_requests')
+      .select(REQUEST_COLUMNS)
+      .eq('user_id', data.user.id)
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle()
+
+    if (existingError) {
+      throw existingError
+    }
+
+    if (req.method === 'GET') {
+      res.status(200).json({ ok: true, request: existingRequest || null })
+      return
+    }
+
+    if (existingRequest) {
+      res.status(200).json({
+        ok: true,
+        existing: true,
+        request: existingRequest,
+        message: 'You have already submitted an API key request.',
+      })
+      return
+    }
+
+    let body = {}
+    try {
+      body = getJsonBody(req)
+    } catch {
+      res.status(400).json({ error: 'Invalid JSON payload.' })
+      return
+    }
+
+    const reason = String(body?.reason || '').trim()
+    if (reason.length < MIN_REASON_LENGTH) {
+      res.status(400).json({ error: 'Reason is too short.' })
+      return
+    }
+    if (reason.length > MAX_REASON_LENGTH) {
+      res.status(400).json({ error: 'Reason is too long.' })
+      return
+    }
+
+    const ip =
+      (req.headers['x-forwarded-for'] || '').toString().split(',')[0].trim() ||
+      req.socket?.remoteAddress ||
+      'unknown'
+
+    const insertClient = SUPABASE_ANON_KEY
+      ? readClient
+      : authClient
+
+    const { data: createdRequest, error: insertError } = await insertClient
+      .from('api_key_requests')
+      .insert({
+        user_id: data.user.id,
+        email: data.user.email || null,
+        reason,
+        source_ip: ip,
+        user_agent: req.headers['user-agent'] || null,
+      })
+      .select(REQUEST_COLUMNS)
+      .single()
 
     if (insertError) {
+      // Race-safe fallback if two requests arrive together and unique user_id wins.
+      if (insertError.code === '23505') {
+        const { data: existingAfterConflict } = await readClient
+          .from('api_key_requests')
+          .select(REQUEST_COLUMNS)
+          .eq('user_id', data.user.id)
+          .order('created_at', { ascending: false })
+          .limit(1)
+          .maybeSingle()
+        res.status(200).json({
+          ok: true,
+          existing: true,
+          request: existingAfterConflict || null,
+          message: 'You have already submitted an API key request.',
+        })
+        return
+      }
       throw insertError
     }
+
+    res.status(200).json({ ok: true, existing: false, request: createdRequest })
+    return
   } catch (dbError) {
-    res.status(500).json({ error: dbError.message || 'Failed to save request.' })
+    res
+      .status(500)
+      .json({ error: getSupabaseErrorMessage(dbError, 'Failed to process request.') })
     return
   }
-
-  res.status(200).json({ ok: true })
 }

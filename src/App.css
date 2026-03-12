@@ -612,6 +612,12 @@
   gap: 12px;
 }
 
+.admin-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
 .admin-panel-head {
   display: flex;
   justify-content: space-between;
@@ -665,6 +671,86 @@
 .admin-status .error {
   color: #ff9fb5;
   font-weight: 700;
+}
+
+.api-admin-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.api-admin-item {
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.04);
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.api-admin-item-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.api-admin-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+.api-admin-reason {
+  margin: 0;
+  color: #f6edff;
+  line-height: 1.5;
+}
+
+.api-admin-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.api-admin-actions input[type='number'],
+.api-admin-actions textarea {
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.06);
+  color: #f2ecff;
+}
+
+.api-admin-actions textarea {
+  resize: vertical;
+  min-height: 70px;
+}
+
+.api-admin-action-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.api-admin-key {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(184, 240, 0, 0.35);
+  background: rgba(184, 240, 0, 0.1);
+}
+
+.api-admin-key code {
+  overflow-wrap: anywhere;
 }
 
 .collectr-importer {
@@ -911,6 +997,38 @@
   display: flex;
   flex-direction: column;
   gap: 12px;
+}
+
+.api-request-status {
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.04);
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.api-request-status-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.api-request-key {
+  border-radius: 12px;
+  border: 1px solid rgba(184, 240, 0, 0.35);
+  background: rgba(184, 240, 0, 0.08);
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.api-request-key code {
+  overflow-wrap: anywhere;
 }
 
 .api-request-label {
