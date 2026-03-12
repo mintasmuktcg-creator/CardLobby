@@ -1,4 +1,4 @@
-﻿import { useEffect, useLayoutEffect, useMemo, useState } from 'react'
+﻿import { useCallback, useEffect, useLayoutEffect, useMemo, useState } from 'react'
 import type { ChangeEvent, FormEvent } from 'react'
 import Papa from 'papaparse'
 import { supabase } from './lib/supabaseClient'
@@ -475,7 +475,7 @@ function App() {
     }
 
     fromSupabase()
-  }, [catalog, catalogConfig.setsTable, catalogConfig.storageKey])
+  }, [catalog, catalogConfig.region, catalogConfig.setsTable, catalogConfig.storageKey])
 
   useEffect(() => {
     if (typeof window !== 'undefined') {
@@ -580,7 +580,8 @@ function App() {
         })
 
         hydrateCards(mapped, setCards, setAvailableSubtypes, setSubtypeFilters)
-      } catch {
+      } catch (err) {
+        console.error('Failed to load set products:', err)
       } finally {
         if (!cancelled) setLoading(false)
       }
@@ -1651,7 +1652,7 @@ function ApiKeyRequestsAdmin({ session }: { session: SupabaseSession }) {
   const [rateDrafts, setRateDrafts] = useState<Record<string, string>>({})
   const [unlimitedDrafts, setUnlimitedDrafts] = useState<Record<string, boolean>>({})
 
-  const loadRequests = async () => {
+  const loadRequests = useCallback(async () => {
     if (!session?.access_token) return
     setLoading(true)
     setError(null)
@@ -1677,11 +1678,11 @@ function ApiKeyRequestsAdmin({ session }: { session: SupabaseSession }) {
     } finally {
       setLoading(false)
     }
-  }
+  }, [session?.access_token])
 
   useEffect(() => {
     void loadRequests()
-  }, [session?.access_token])
+  }, [loadRequests])
 
   const runAction = async (
     requestId: string,
@@ -2305,7 +2306,7 @@ function ApiDocsPage({ session, onSignIn, onSignUp }: ApiDocsProps) {
     { key: 'offset', desc: 'Offset (history only).', type: 'int' },
   ]
 
-  const loadRequestStatus = async () => {
+  const loadRequestStatus = useCallback(async () => {
     if (!isSignedIn || !session?.access_token) {
       setRequestRecord(null)
       return
@@ -2329,11 +2330,11 @@ function ApiDocsPage({ session, onSignIn, onSignUp }: ApiDocsProps) {
     } finally {
       setRequestLoading(false)
     }
-  }
+  }, [isSignedIn, session?.access_token])
 
   useEffect(() => {
     void loadRequestStatus()
-  }, [isSignedIn, session?.access_token])
+  }, [loadRequestStatus])
 
   const submitRequest = async (event: FormEvent) => {
     event.preventDefault()
