@@ -1,10 +1,56 @@
 import { runCollectrImport } from '../scripts/collectr-importer-core.mjs'
+import { createClient } from '@supabase/supabase-js'
 
 const SUPABASE_URL = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL
-const SUPABASE_KEY =
-  process.env.SUPABASE_SERVICE_ROLE_KEY ||
-  process.env.SUPABASE_ANON_KEY ||
-  process.env.VITE_SUPABASE_ANON_KEY
+const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY
+const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY
+const SUPABASE_AUTH_KEY = SUPABASE_SERVICE_ROLE_KEY || SUPABASE_ANON_KEY
+const SUPABASE_IMPORT_KEY = SUPABASE_SERVICE_ROLE_KEY || SUPABASE_ANON_KEY
+
+const IMPORT_RATE_LIMIT = (() => {
+  const raw = Number(process.env.COLLECTR_IMPORT_RATE_LIMIT)
+  return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 10
+})()
+
+const IMPORT_RATE_WINDOW_MS = (() => {
+  const raw = Number(process.env.COLLECTR_IMPORT_RATE_WINDOW_MS)
+  return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 86_400_000
+})()
+
+const importRateState = new Map()
+
+const extractToken = (req) => {
+  const header = req.headers?.authorization || ''
+  if (header.toLowerCase().startsWith('bearer ')) {
+    return header.slice(7).trim()
+  }
+  return null
+}
+
+const getClientIp = (req) => {
+  return (
+    (req.headers['x-forwarded-for'] || '').toString().split(',')[0].trim() ||
+    req.socket?.remoteAddress ||
+    'unknown'
+  )
+}
+
+const applyRateLimit = (key) => {
+  const now = Date.now()
+  let entry = importRateState.get(key)
+  if (!entry || now >= entry.resetAt) {
+    entry = { count: 0, resetAt: now + IMPORT_RATE_WINDOW_MS }
+  }
+  entry.count += 1
+  importRateState.set(key, entry)
+
+  return {
+    limit: IMPORT_RATE_LIMIT,
+    remaining: Math.max(0, IMPORT_RATE_LIMIT - entry.count),
+    resetAt: entry.resetAt,
+    exceeded: entry.count > IMPORT_RATE_LIMIT,
+  }
+}
 
 export default async function handler(req, res) {
   res.setHeader('Cache-Control', 'no-store')
@@ -14,8 +60,35 @@ export default async function handler(req, res) {
     return
   }
 
-  if (!SUPABASE_URL || !SUPABASE_KEY) {
+  if (!SUPABASE_URL || !SUPABASE_AUTH_KEY || !SUPABASE_IMPORT_KEY) {
     res.status(500).json({ error: 'Supabase env vars are missing.' })
+    return
+  }
+
+  const token = extractToken(req)
+  if (!token) {
+    res.status(401).json({ error: 'Missing authorization token.' })
+    return
+  }
+
+  const authClient = createClient(SUPABASE_URL, SUPABASE_AUTH_KEY, {
+    auth: { persistSession: false, autoRefreshToken: false },
+  })
+
+  const { data: authData, error: authError } = await authClient.auth.getUser(token)
+  if (authError || !authData?.user?.id) {
+    res.status(401).json({ error: 'Invalid or expired session.' })
+    return
+  }
+
+  const rateKey = `${authData.user.id}:${getClientIp(req)}`
+  const rate = applyRateLimit(rateKey)
+  res.setHeader('X-RateLimit-Limit', String(rate.limit))
+  res.setHeader('X-RateLimit-Remaining', String(rate.remaining))
+  res.setHeader('X-RateLimit-Reset', String(Math.ceil(rate.resetAt / 1000)))
+  if (rate.exceeded) {
+    res.setHeader('Retry-After', String(Math.max(1, Math.ceil((rate.resetAt - Date.now()) / 1000))))
+    res.status(429).json({ error: 'Rate limit exceeded. Please try again shortly.' })
     return
   }
 
@@ -66,7 +139,7 @@ export default async function handler(req, res) {
     const payload = await runCollectrImport({
       url: sanitizedUrl,
       supabaseUrl: SUPABASE_URL,
-      supabaseKey: SUPABASE_KEY,
+      supabaseKey: SUPABASE_IMPORT_KEY,
     })
 
     res.status(200).json(payload)

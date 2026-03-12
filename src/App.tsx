@@ -263,6 +263,12 @@ type ApiDocsProps = {
   onSignUp: () => void
 }
 
+type CollectrImporterProps = {
+  session: SupabaseSession
+  onSignIn: () => void
+  onSignUp: () => void
+}
+
 type ApiKeyRequestStatus = 'pending' | 'approved' | 'denied'
 
 type ApiKeyRequestRecord = {
@@ -1059,7 +1065,11 @@ function App() {
         <div className="app-body no-sidebar">
           <main className="main-content">
             <div className="page content-narrow">
-              <CollectrImporter />
+              <CollectrImporter
+                session={session}
+                onSignIn={() => openAuthModal('signin')}
+                onSignUp={() => openAuthModal('signup')}
+              />
             </div>
           </main>
         </div>
@@ -1942,7 +1952,7 @@ function ApiKeyRequestsAdmin({ session }: { session: SupabaseSession }) {
   )
 }
 
-function CollectrImporter() {
+function CollectrImporter({ session, onSignIn, onSignUp }: CollectrImporterProps) {
   const [url, setUrl] = useState('')
   const [status, setStatus] = useState<'idle' | 'loading' | 'done' | 'error'>('idle')
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
@@ -1950,6 +1960,7 @@ function CollectrImporter() {
   const [results, setResults] = useState<CollectrImportResult[]>([])
   const [collections, setCollections] = useState<CollectrCollection[]>([])
   const [selectedCollectionId, setSelectedCollectionId] = useState('')
+  const isSignedIn = Boolean(session?.access_token)
   const totalMarketValue = useMemo(() => {
     if (!results.length) return null
     let total = 0
@@ -2021,6 +2032,12 @@ function CollectrImporter() {
   }
 
   const runImport = async () => {
+    if (!session?.access_token) {
+      setStatus('error')
+      setErrorMessage('Sign in to run imports.')
+      return
+    }
+
     const trimmed = url.trim()
     if (!trimmed) {
       setErrorMessage('Enter a Collectr profile URL to import.')
@@ -2036,7 +2053,12 @@ function CollectrImporter() {
 
     try {
       const params = new URLSearchParams({ url: trimmed })
-      const response = await fetch(`/api/collectr-importer?${params.toString()}`)
+      const response = await fetch(`/api/collectr-importer?${params.toString()}`, {
+        method: 'GET',
+        headers: {
+          Authorization: `Bearer ${session.access_token}`,
+        },
+      })
       const text = await response.text()
 
       let payload: {
@@ -2114,15 +2136,29 @@ function CollectrImporter() {
             placeholder="https://app.getcollectr.com/showcase/profile/..."
             value={url}
             onChange={(e) => setUrl(e.target.value)}
+            disabled={!isSignedIn || status === 'loading'}
           />
           <button
             className="btn primary"
             type="submit"
-            disabled={status === 'loading'}
+            disabled={!isSignedIn || status === 'loading'}
           >
             {status === 'loading' ? 'Importing...' : 'Run import'}
           </button>
         </form>
+        {!isSignedIn && (
+          <div className="api-request-locked">
+            <p className="swatch-note">Sign in or create an account to use the importer.</p>
+            <div className="cta-row">
+              <button className="btn ghost" onClick={onSignIn}>
+                Sign in
+              </button>
+              <button className="btn primary" onClick={onSignUp}>
+                Sign up
+              </button>
+            </div>
+          </div>
+        )}
         {collections.length > 0 && (
           <div className="importer-row">
             <select
