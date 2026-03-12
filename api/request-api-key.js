@@ -5,7 +5,7 @@ const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY
 const SUPABASE_AUTH_KEY = SUPABASE_SERVICE_ROLE_KEY || SUPABASE_ANON_KEY
 const REQUEST_COLUMNS =
-  'request_id, user_id, email, reason, status, source_ip, user_agent, created_at, reviewed_at, admin_notes, api_key_id, issued_api_key'
+  'request_id, user_id, email, reason, status, source_ip, user_agent, created_at, reviewed_at, admin_notes, api_key_id, api_key_preview'
 
 const MIN_REASON_LENGTH = 10
 const MAX_REASON_LENGTH = 2000

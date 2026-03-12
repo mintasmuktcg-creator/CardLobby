@@ -15,7 +15,7 @@ const API_KEY_PEPPER = process.env.API_KEY_PEPPER || ''
 
 const DEFAULT_RATE_LIMIT = 120
 const REQUEST_COLUMNS =
-  'request_id, user_id, email, reason, status, source_ip, user_agent, created_at, reviewed_at, reviewed_by, admin_notes, api_key_id, issued_api_key'
+  'request_id, user_id, email, reason, status, source_ip, user_agent, created_at, reviewed_at, reviewed_by, admin_notes, api_key_id, api_key_preview'
 
 const extractToken = (req) => {
   const header = req.headers?.authorization || ''
@@ -59,6 +59,13 @@ const sanitizePrefix = (value) => {
 const generateApiKey = (prefix) => {
   const token = crypto.randomBytes(24).toString('hex')
   return `${prefix}_${token}`
+}
+
+const toApiKeyPreview = (rawKey) => {
+  const value = String(rawKey || '').trim()
+  if (!value) return null
+  if (value.length <= 12) return value
+  return `${value.slice(0, 8)}...${value.slice(-4)}`
 }
 
 const hashApiKey = (rawKey) => {
@@ -167,8 +174,8 @@ export default async function handler(req, res) {
     res.status(400).json({ error: 'requestId is required.' })
     return
   }
-  if (action !== 'approve' && action !== 'deny') {
-    res.status(400).json({ error: "action must be 'approve' or 'deny'." })
+  if (action !== 'approve' && action !== 'deny' && action !== 'regenerate') {
+    res.status(400).json({ error: "action must be 'approve', 'deny', or 'regenerate'." })
     return
   }
 
@@ -186,9 +193,13 @@ export default async function handler(req, res) {
     res.status(404).json({ error: 'Request not found.' })
     return
   }
-  if (requestRow.status !== 'pending') {
+  if ((action === 'approve' || action === 'deny') && requestRow.status !== 'pending') {
+    res.status(409).json({ error: `Request is already ${requestRow.status}.`, request: requestRow })
+    return
+  }
+  if (action === 'regenerate' && requestRow.status !== 'approved') {
     res.status(409).json({
-      error: `Request is already ${requestRow.status}.`,
+      error: `Request must be approved before regenerating a key (current: ${requestRow.status}).`,
       request: requestRow,
     })
     return
@@ -205,7 +216,7 @@ export default async function handler(req, res) {
         reviewed_at: reviewedAt,
         admin_notes: adminNotes,
         api_key_id: null,
-        issued_api_key: null,
+        api_key_preview: null,
       })
       .eq('request_id', requestId)
       .select(REQUEST_COLUMNS)
@@ -221,9 +232,35 @@ export default async function handler(req, res) {
   }
 
   const keyPrefix = sanitizePrefix(body?.keyPrefix)
-  const isUnlimited = body?.isUnlimited === true
   const requestedRate = toInt(body?.rateLimitPerMin)
-  const rateLimitPerMin = isUnlimited ? null : requestedRate ?? DEFAULT_RATE_LIMIT
+
+  let existingKey = null
+  if (action === 'regenerate' && requestRow.api_key_id) {
+    const { data: existingKeyData, error: existingKeyError } = await adminClient
+      .from('api_keys')
+      .select('api_key_id, name, rate_limit_per_min, is_unlimited')
+      .eq('api_key_id', requestRow.api_key_id)
+      .maybeSingle()
+
+    if (existingKeyError) {
+      res.status(500).json({ error: getErrorMessage(existingKeyError, 'Failed to load existing key.') })
+      return
+    }
+    existingKey = existingKeyData || null
+  }
+
+  const hasIsUnlimitedInput = Object.prototype.hasOwnProperty.call(body || {}, 'isUnlimited')
+  const isUnlimited = hasIsUnlimitedInput
+    ? body?.isUnlimited === true
+    : action === 'regenerate'
+      ? Boolean(existingKey?.is_unlimited)
+      : false
+  const rateLimitPerMin = isUnlimited
+    ? null
+    : requestedRate ??
+      (action === 'regenerate' && existingKey
+        ? toInt(existingKey.rate_limit_per_min) ?? DEFAULT_RATE_LIMIT
+        : DEFAULT_RATE_LIMIT)
 
   const rawApiKey = generateApiKey(keyPrefix)
   const keyHash = hashApiKey(rawApiKey)
@@ -231,9 +268,13 @@ export default async function handler(req, res) {
     res.status(500).json({ error: 'Failed to generate API key hash.' })
     return
   }
+  const apiKeyPreview = toApiKeyPreview(rawApiKey)
 
   const nameParts = ['CardLobby', requestRow.email || requestRow.user_id || requestId]
-  const keyName = nameParts.filter(Boolean).join(' | ').slice(0, 200)
+  const keyName = (action === 'regenerate' && existingKey?.name
+    ? existingKey.name
+    : nameParts.filter(Boolean).join(' | ')
+  ).slice(0, 200)
 
   const { data: keyRow, error: keyInsertError } = await adminClient
     .from('api_keys')
@@ -254,7 +295,7 @@ export default async function handler(req, res) {
     return
   }
 
-  const { data: approvedRow, error: approveError } = await adminClient
+  let updateQuery = adminClient
     .from('api_key_requests')
     .update({
       status: 'approved',
@@ -262,10 +303,14 @@ export default async function handler(req, res) {
       reviewed_at: reviewedAt,
       admin_notes: adminNotes,
       api_key_id: keyRow.api_key_id,
-      issued_api_key: rawApiKey,
+      api_key_preview: apiKeyPreview,
     })
     .eq('request_id', requestId)
-    .eq('status', 'pending')
+  updateQuery =
+    action === 'approve'
+      ? updateQuery.eq('status', 'pending')
+      : updateQuery.eq('status', 'approved')
+  const { data: approvedRow, error: approveError } = await updateQuery
     .select(REQUEST_COLUMNS)
     .single()
 
@@ -281,5 +326,14 @@ export default async function handler(req, res) {
     return
   }
 
-  res.status(200).json({ ok: true, request: approvedRow })
+  const previousApiKeyId = requestRow.api_key_id
+  if (action === 'regenerate' && previousApiKeyId && previousApiKeyId !== keyRow.api_key_id) {
+    await adminClient.from('api_keys').update({ is_active: false }).eq('api_key_id', previousApiKeyId)
+  }
+
+  res.status(200).json({
+    ok: true,
+    request: approvedRow,
+    issuedApiKeyOnce: rawApiKey,
+  })
 }

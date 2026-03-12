@@ -278,7 +278,7 @@ type ApiKeyRequestRecord = {
   reviewed_by: string | null
   admin_notes: string | null
   api_key_id: string | null
-  issued_api_key: string | null
+  api_key_preview: string | null
 }
 
 type AdminPortalProps = {
@@ -1646,6 +1646,7 @@ function ApiKeyRequestsAdmin({ session }: { session: SupabaseSession }) {
   const [error, setError] = useState<string | null>(null)
   const [busyRequestId, setBusyRequestId] = useState<string | null>(null)
   const [actionMessage, setActionMessage] = useState<string | null>(null)
+  const [issuedKeyOnce, setIssuedKeyOnce] = useState<string | null>(null)
   const [noteDrafts, setNoteDrafts] = useState<Record<string, string>>({})
   const [rateDrafts, setRateDrafts] = useState<Record<string, string>>({})
   const [unlimitedDrafts, setUnlimitedDrafts] = useState<Record<string, boolean>>({})
@@ -1682,17 +1683,21 @@ function ApiKeyRequestsAdmin({ session }: { session: SupabaseSession }) {
     void loadRequests()
   }, [session?.access_token])
 
-  const runAction = async (requestId: string, action: 'approve' | 'deny') => {
+  const runAction = async (
+    requestId: string,
+    action: 'approve' | 'deny' | 'regenerate',
+  ) => {
     if (!session?.access_token) return
     setBusyRequestId(requestId)
     setError(null)
     setActionMessage(null)
+    setIssuedKeyOnce(null)
 
     const rateRaw = String(rateDrafts[requestId] || '').trim()
     const isUnlimited = !!unlimitedDrafts[requestId]
     const rateLimitPerMin = rateRaw.length > 0 ? Number(rateRaw) : null
     if (
-      action === 'approve' &&
+      (action === 'approve' || action === 'regenerate') &&
       !isUnlimited &&
       rateRaw.length > 0 &&
       (!Number.isFinite(rateLimitPerMin) || (rateLimitPerMin as number) <= 0)
@@ -1715,7 +1720,7 @@ function ApiKeyRequestsAdmin({ session }: { session: SupabaseSession }) {
           adminNotes: noteDrafts[requestId] || '',
           isUnlimited,
           rateLimitPerMin:
-            action === 'approve'
+            action === 'approve' || action === 'regenerate'
               ? isUnlimited
                 ? null
                 : rateRaw.length > 0
@@ -1732,8 +1737,13 @@ function ApiKeyRequestsAdmin({ session }: { session: SupabaseSession }) {
       setActionMessage(
         action === 'approve'
           ? 'Request approved and API key generated.'
-          : 'Request denied.',
+          : action === 'regenerate'
+            ? 'API key regenerated.'
+            : 'Request denied.',
       )
+      if (typeof payload?.issuedApiKeyOnce === 'string' && payload.issuedApiKeyOnce.trim()) {
+        setIssuedKeyOnce(payload.issuedApiKeyOnce.trim())
+      }
       await loadRequests()
     } catch (err) {
       setError(formatError(err))
@@ -1771,6 +1781,12 @@ function ApiKeyRequestsAdmin({ session }: { session: SupabaseSession }) {
       <div className="admin-status">
         {error && <span className="error">{error}</span>}
         {!error && actionMessage && <span className="success">{actionMessage}</span>}
+        {!error && issuedKeyOnce && (
+          <div className="api-admin-key">
+            <span className="swatch-note">Copy now: one-time API key</span>
+            <code>{issuedKeyOnce}</code>
+          </div>
+        )}
         {!error && !actionMessage && loading && <span>Loading requests…</span>}
         {!error && !actionMessage && !loading && requests.length === 0 && (
           <span>No API key requests yet.</span>
@@ -1794,10 +1810,10 @@ function ApiKeyRequestsAdmin({ session }: { session: SupabaseSession }) {
               </div>
               <p className="api-admin-reason">{request.reason}</p>
 
-              {request.status === 'approved' && request.issued_api_key && (
+              {request.status === 'approved' && request.api_key_preview && (
                 <div className="api-admin-key">
-                  <span className="swatch-note">Issued API key</span>
-                  <code>{request.issued_api_key}</code>
+                  <span className="swatch-note">Current key preview</span>
+                  <code>{request.api_key_preview}</code>
                 </div>
               )}
 
@@ -1860,6 +1876,59 @@ function ApiKeyRequestsAdmin({ session }: { session: SupabaseSession }) {
                       disabled={isBusy}
                     >
                       Deny
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {request.status === 'approved' && (
+                <div className="api-admin-actions">
+                  <input
+                    type="number"
+                    min="1"
+                    placeholder="Rate limit / min (optional on regenerate)"
+                    value={rateDrafts[request.request_id] || ''}
+                    onChange={(event) =>
+                      setRateDrafts((prev) => ({
+                        ...prev,
+                        [request.request_id]: event.target.value,
+                      }))
+                    }
+                    disabled={isBusy}
+                  />
+                  <label className="toggle">
+                    <input
+                      type="checkbox"
+                      checked={!!unlimitedDrafts[request.request_id]}
+                      onChange={(event) =>
+                        setUnlimitedDrafts((prev) => ({
+                          ...prev,
+                          [request.request_id]: event.target.checked,
+                        }))
+                      }
+                      disabled={isBusy}
+                    />
+                    Unlimited
+                  </label>
+                  <textarea
+                    rows={2}
+                    placeholder="Admin notes (optional)"
+                    value={noteDrafts[request.request_id] || ''}
+                    onChange={(event) =>
+                      setNoteDrafts((prev) => ({
+                        ...prev,
+                        [request.request_id]: event.target.value,
+                      }))
+                    }
+                    disabled={isBusy}
+                  />
+                  <div className="api-admin-action-row">
+                    <button
+                      className="btn ghost"
+                      onClick={() => void runAction(request.request_id, 'regenerate')}
+                      disabled={isBusy}
+                    >
+                      {isBusy ? 'Processing…' : 'Regenerate Key'}
                     </button>
                   </div>
                 </div>
@@ -2494,10 +2563,13 @@ function ApiDocsPage({ session, onSignIn, onSignUp }: ApiDocsProps) {
                     {requestRecord.admin_notes && (
                       <p className="swatch-note">Admin notes: {requestRecord.admin_notes}</p>
                     )}
-                    {requestRecord.status === 'approved' && requestRecord.issued_api_key && (
+                    {requestRecord.status === 'approved' && requestRecord.api_key_preview && (
                       <div className="api-request-key">
-                        <span className="swatch-note">Your API key</span>
-                        <code>{requestRecord.issued_api_key}</code>
+                        <span className="swatch-note">Your API key preview</span>
+                        <code>{requestRecord.api_key_preview}</code>
+                        <span className="swatch-note">
+                          Full keys are not stored. If you lost it, contact admin for regeneration.
+                        </span>
                       </div>
                     )}
                   </>
