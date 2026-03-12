@@ -1,4 +1,3 @@
-import crypto from 'node:crypto'
 import { createClient } from '@supabase/supabase-js'
 
 const SUPABASE_URL = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL
@@ -11,7 +10,15 @@ const ADMIN_USER_IDS = new Set(
     .map((value) => value.trim())
     .filter(Boolean),
 )
-const API_KEY_PEPPER = process.env.API_KEY_PEPPER || ''
+const CARDHQ_ISSUER_URL = String(process.env.CARDHQ_ISSUER_URL || '')
+  .trim()
+  .replace(/\/+$/, '')
+const CARDHQ_ISSUER_SECRET = String(process.env.CARDHQ_ISSUER_SECRET || '').trim()
+const CARDHQ_ISSUER_TIMEOUT_MS = (() => {
+  const raw = Number(process.env.CARDHQ_ISSUER_TIMEOUT_MS)
+  if (Number.isFinite(raw) && raw > 0) return raw
+  return 10000
+})()
 
 const DEFAULT_RATE_LIMIT = 120
 const REQUEST_COLUMNS =
@@ -56,25 +63,71 @@ const sanitizePrefix = (value) => {
   return safe.slice(0, 20)
 }
 
-const generateApiKey = (prefix) => {
-  const token = crypto.randomBytes(24).toString('hex')
-  return `${prefix}_${token}`
+const hasOwn = (value, key) => Object.prototype.hasOwnProperty.call(value || {}, key)
+
+const makeIssuerRequest = async (path, payload) => {
+  if (!CARDHQ_ISSUER_URL || !CARDHQ_ISSUER_SECRET) {
+    throw new Error('CARDHQ_ISSUER_URL and CARDHQ_ISSUER_SECRET are required.')
+  }
+
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), CARDHQ_ISSUER_TIMEOUT_MS)
+
+  try {
+    const response = await fetch(`${CARDHQ_ISSUER_URL}${path}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-admin-secret': CARDHQ_ISSUER_SECRET,
+      },
+      body: JSON.stringify(payload || {}),
+      signal: controller.signal,
+    })
+
+    const responseBody = await response.json().catch(() => ({}))
+    if (!response.ok) {
+      throw new Error(
+        getErrorMessage(responseBody, `CardHQ issuer request failed (${response.status}).`),
+      )
+    }
+    return responseBody
+  } catch (err) {
+    if (err?.name === 'AbortError') {
+      throw new Error('CardHQ issuer request timed out.')
+    }
+    throw err
+  } finally {
+    clearTimeout(timer)
+  }
 }
 
-const toApiKeyPreview = (rawKey) => {
-  const value = String(rawKey || '').trim()
-  if (!value) return null
-  if (value.length <= 12) return value
-  return `${value.slice(0, 8)}...${value.slice(-4)}`
+const issueCardhqKey = async (payload) => {
+  const body = await makeIssuerRequest('/admin/api-keys/issue', payload)
+  const apiKeyId = String(body?.apiKeyId || '').trim()
+  const apiKey = String(body?.apiKey || '').trim()
+  const apiKeyPreview = String(body?.apiKeyPreview || '').trim() || null
+
+  if (!apiKeyId || !apiKey) {
+    throw new Error('CardHQ issuer response was missing required fields.')
+  }
+
+  return {
+    apiKeyId,
+    apiKey,
+    apiKeyPreview,
+  }
 }
 
-const hashApiKey = (rawKey) => {
-  const value = String(rawKey || '').trim()
-  if (!value) return null
-  const hasher = API_KEY_PEPPER
-    ? crypto.createHmac('sha256', API_KEY_PEPPER)
-    : crypto.createHash('sha256')
-  return hasher.update(value).digest('hex')
+const revokeCardhqKey = async (apiKeyId) => {
+  const value = String(apiKeyId || '').trim()
+  if (!value) return false
+  try {
+    await makeIssuerRequest('/admin/api-keys/revoke', { apiKeyId: value })
+    return true
+  } catch (err) {
+    console.error('Failed to revoke CardHQ key:', getErrorMessage(err, 'Unknown error'))
+    return false
+  }
 }
 
 async function requireAdminUser(req) {
@@ -233,65 +286,53 @@ export default async function handler(req, res) {
 
   const keyPrefix = sanitizePrefix(body?.keyPrefix)
   const requestedRate = toInt(body?.rateLimitPerMin)
-
-  let existingKey = null
-  if (action === 'regenerate' && requestRow.api_key_id) {
-    const { data: existingKeyData, error: existingKeyError } = await adminClient
-      .from('api_keys')
-      .select('api_key_id, name, rate_limit_per_min, is_unlimited')
-      .eq('api_key_id', requestRow.api_key_id)
-      .maybeSingle()
-
-    if (existingKeyError) {
-      res.status(500).json({ error: getErrorMessage(existingKeyError, 'Failed to load existing key.') })
-      return
-    }
-    existingKey = existingKeyData || null
-  }
-
-  const hasIsUnlimitedInput = Object.prototype.hasOwnProperty.call(body || {}, 'isUnlimited')
-  const isUnlimited = hasIsUnlimitedInput
-    ? body?.isUnlimited === true
-    : action === 'regenerate'
-      ? Boolean(existingKey?.is_unlimited)
-      : false
-  const rateLimitPerMin = isUnlimited
-    ? null
-    : requestedRate ??
-      (action === 'regenerate' && existingKey
-        ? toInt(existingKey.rate_limit_per_min) ?? DEFAULT_RATE_LIMIT
-        : DEFAULT_RATE_LIMIT)
-
-  const rawApiKey = generateApiKey(keyPrefix)
-  const keyHash = hashApiKey(rawApiKey)
-  if (!keyHash) {
-    res.status(500).json({ error: 'Failed to generate API key hash.' })
+  const hasRateInput =
+    hasOwn(body, 'rateLimitPerMin') &&
+    body?.rateLimitPerMin !== '' &&
+    body?.rateLimitPerMin !== null &&
+    body?.rateLimitPerMin !== undefined
+  if (hasRateInput && (!requestedRate || requestedRate <= 0)) {
+    res.status(400).json({ error: 'rateLimitPerMin must be a positive number.' })
     return
   }
-  const apiKeyPreview = toApiKeyPreview(rawApiKey)
+
+  const hasIsUnlimitedInput = hasOwn(body, 'isUnlimited')
+  const isUnlimitedInput = body?.isUnlimited === true
+  const previousApiKeyId = String(requestRow.api_key_id || '').trim() || null
 
   const nameParts = ['CardLobby', requestRow.email || requestRow.user_id || requestId]
-  const keyName = (action === 'regenerate' && existingKey?.name
-    ? existingKey.name
-    : nameParts.filter(Boolean).join(' | ')
-  ).slice(0, 200)
+  const keyName = nameParts.filter(Boolean).join(' | ').slice(0, 200)
 
-  const { data: keyRow, error: keyInsertError } = await adminClient
-    .from('api_keys')
-    .insert({
-      name: keyName,
-      key_hash: keyHash,
-      rate_limit_per_min: rateLimitPerMin,
-      is_unlimited: isUnlimited,
-      is_active: true,
+  const issuePayload = {
+    keyPrefix,
+    replaceApiKeyId: action === 'regenerate' ? previousApiKeyId : null,
+  }
+
+  if (action === 'approve') {
+    issuePayload.name = keyName
+    issuePayload.isUnlimited = hasIsUnlimitedInput ? isUnlimitedInput : false
+    if (!issuePayload.isUnlimited) {
+      issuePayload.rateLimitPerMin = hasRateInput ? requestedRate : DEFAULT_RATE_LIMIT
+    }
+  } else {
+    if (hasIsUnlimitedInput) {
+      issuePayload.isUnlimited = isUnlimitedInput
+    }
+    if (!isUnlimitedInput && hasRateInput) {
+      issuePayload.rateLimitPerMin = requestedRate
+    }
+    if (!previousApiKeyId && hasIsUnlimitedInput && !isUnlimitedInput && !hasRateInput) {
+      issuePayload.rateLimitPerMin = DEFAULT_RATE_LIMIT
+    }
+  }
+
+  let issuedKey
+  try {
+    issuedKey = await issueCardhqKey(issuePayload)
+  } catch (issueError) {
+    res.status(502).json({
+      error: getErrorMessage(issueError, 'Failed to issue API key in CardHQ.'),
     })
-    .select('api_key_id')
-    .single()
-
-  if (keyInsertError) {
-    res
-      .status(500)
-      .json({ error: getErrorMessage(keyInsertError, 'Failed to create API key record.') })
     return
   }
 
@@ -302,8 +343,8 @@ export default async function handler(req, res) {
       reviewed_by: adminUser.id,
       reviewed_at: reviewedAt,
       admin_notes: adminNotes,
-      api_key_id: keyRow.api_key_id,
-      api_key_preview: apiKeyPreview,
+      api_key_id: issuedKey.apiKeyId,
+      api_key_preview: issuedKey.apiKeyPreview,
     })
     .eq('request_id', requestId)
   updateQuery =
@@ -315,10 +356,7 @@ export default async function handler(req, res) {
     .single()
 
   if (approveError) {
-    await adminClient
-      .from('api_keys')
-      .update({ is_active: false })
-      .eq('api_key_id', keyRow.api_key_id)
+    await revokeCardhqKey(issuedKey.apiKeyId)
 
     res.status(500).json({
       error: getErrorMessage(approveError, 'Failed to approve request. Generated key was disabled.'),
@@ -326,14 +364,17 @@ export default async function handler(req, res) {
     return
   }
 
-  const previousApiKeyId = requestRow.api_key_id
-  if (action === 'regenerate' && previousApiKeyId && previousApiKeyId !== keyRow.api_key_id) {
-    await adminClient.from('api_keys').update({ is_active: false }).eq('api_key_id', previousApiKeyId)
+  if (
+    action === 'regenerate' &&
+    previousApiKeyId &&
+    previousApiKeyId !== issuedKey.apiKeyId
+  ) {
+    await revokeCardhqKey(previousApiKeyId)
   }
 
   res.status(200).json({
     ok: true,
     request: approvedRow,
-    issuedApiKeyOnce: rawApiKey,
+    issuedApiKeyOnce: issuedKey.apiKey,
   })
 }
