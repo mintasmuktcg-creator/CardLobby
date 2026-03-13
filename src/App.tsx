@@ -371,7 +371,12 @@ function App() {
               cleanName: productName || 'Unknown product',
               setId: selectedSetId,
               setName: product?.set_name ?? null,
-              imageUrl: product?.image_url ?? null,
+              imageUrl:
+                typeof product?.image_url === 'string' && product.image_url.trim().length > 0
+                  ? product.image_url.trim()
+                  : Number.isFinite(productId) && productId > 0
+                    ? `https://tcgplayer-cdn.tcgplayer.com/product/${productId}_200w.jpg`
+                    : null,
               marketPrice: (() => {
                 const numeric =
                   typeof product?.market_price === 'number'

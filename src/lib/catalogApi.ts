@@ -27,11 +27,25 @@ export type CatalogProductRow = {
   printing?: string | null
 }
 
+const TCGPLAYER_IMAGE_BASE_URL = 'https://tcgplayer-cdn.tcgplayer.com/product'
+
 const toFiniteNumber = (value: unknown): number | null => {
   if (value === null || value === undefined || value === '') return null
   const numeric = typeof value === 'number' ? value : Number(value)
   if (!Number.isFinite(numeric)) return null
   return numeric
+}
+
+const toPositiveInt = (value: unknown): number | null => {
+  const numeric = toFiniteNumber(value)
+  if (numeric === null) return null
+  const asInt = Math.floor(numeric)
+  return asInt > 0 ? asInt : null
+}
+
+const buildImageUrl = (productId: number | null) => {
+  if (!productId) return null
+  return `${TCGPLAYER_IMAGE_BASE_URL}/${productId}_200w.jpg`
 }
 
 const CONDITION_RANK = new Map([
@@ -117,8 +131,15 @@ export const fetchCatalogProducts = async (setNameId: number): Promise<CatalogPr
     const rows = Array.isArray(payload?.rows) ? (payload.rows as CatalogProductRow[]) : []
     if (!rows.length) break
     rows.forEach((row) => {
+      const productId = toPositiveInt(row?.product_id)
+      const imageUrl =
+        typeof row?.image_url === 'string' && row.image_url.trim().length > 0
+          ? row.image_url.trim()
+          : buildImageUrl(productId)
       out.push({
         ...row,
+        product_id: productId ?? 0,
+        image_url: imageUrl,
         market_price: toFiniteNumber(row?.market_price),
       })
     })
