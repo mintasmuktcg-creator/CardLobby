@@ -479,11 +479,13 @@ export const buildSetMap = (rows) => {
     map.set(normalized, list)
   }
   for (const row of rows || []) {
-    add(row, row.name)
-    if (row.name_other) add(row, row.name_other)
-    const colonMatch = row.name.match(/^([A-Z0-9]{2,6})\s*:\s*(.+)$/i)
+    const primaryName = String(row?.name || '')
+    add(row, primaryName)
+    if (row?.name_other) add(row, row.name_other)
+    if (row?.other_name) add(row, row.other_name)
+    const colonMatch = primaryName.match(/^([A-Z0-9]{2,6})\s*:\s*(.+)$/i)
     if (colonMatch) add(row, colonMatch[2])
-    const dashMatch = row.name.match(/^([A-Z0-9]{2,6})\s*-\s*(.+)$/i)
+    const dashMatch = primaryName.match(/^([A-Z0-9]{2,6})\s*-\s*(.+)$/i)
     if (dashMatch) add(row, dashMatch[2])
   }
   return map

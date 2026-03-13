@@ -3,6 +3,7 @@ export type CatalogRegion = 'EN' | 'JP'
 export type CatalogSetRow = {
   set_name_id: number
   name: string
+  other_name?: string | null
   abbreviation?: string | null
   release_date?: string | null
   active?: boolean | null
@@ -12,6 +13,7 @@ export type CatalogProductRow = {
   product_id: number
   set_name_id: number
   set_name?: string | null
+  set_other_name?: string | null
   set_abbreviation?: string | null
   product_name?: string | null
   number?: string | null

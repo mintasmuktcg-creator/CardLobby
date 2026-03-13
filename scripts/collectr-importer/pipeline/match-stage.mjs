@@ -145,7 +145,9 @@ const fetchCardhqRows = async ({ config, pathname, baseParams = {} }) => {
 const mapSetRow = (row, region) => ({
   id: toPositiveInt(row?.set_name_id) || row?.set_name_id || null,
   name: String(row?.name || '').trim(),
-  name_other: null,
+  name_other:
+    String(row?.name_other ?? row?.other_name ?? '')
+      .trim() || null,
   code: row?.abbreviation ?? null,
   region,
 })
@@ -245,7 +247,7 @@ const normalizeApiProductRow = ({ row, region }) => {
     pokemon_sets: {
       id: setId,
       name: row?.set_name ?? null,
-      name_other: null,
+      name_other: row?.set_name_other ?? row?.set_other_name ?? null,
       code: row?.set_abbreviation ?? null,
       region: normalizeRegion(region),
     },
