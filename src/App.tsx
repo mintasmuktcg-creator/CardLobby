@@ -76,8 +76,10 @@ type CardRow = {
 }
 
 function formatPrice(value: number | null | undefined) {
-  if (value === undefined || value === null || Number.isNaN(value)) return '-'
-  return `$${value.toFixed(2)}`
+  if (value === undefined || value === null) return '-'
+  const numeric = typeof value === 'number' ? value : Number(value)
+  if (!Number.isFinite(numeric)) return '-'
+  return `$${numeric.toFixed(2)}`
 }
 
 function parseCardNumber(extNumber?: string | number | null): number | null {
@@ -370,7 +372,13 @@ function App() {
               setId: selectedSetId,
               setName: product?.set_name ?? null,
               imageUrl: product?.image_url ?? null,
-              marketPrice: product?.market_price ?? null,
+              marketPrice: (() => {
+                const numeric =
+                  typeof product?.market_price === 'number'
+                    ? product.market_price
+                    : Number(product?.market_price)
+                return Number.isFinite(numeric) ? numeric : null
+              })(),
               extNumber: cardNumber,
               extRarity: product?.rarity ?? null,
               extCardType: product?.printing ?? null,

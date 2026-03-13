@@ -15,9 +15,11 @@ type CollectrImporterProps = {
 
 const COLLECTR_COLLECTIONS_CACHE_KEY = 'cardlobby.collectr.collections'
 
-const formatPrice = (value: number | null | undefined) => {
-  if (value === undefined || value === null || Number.isNaN(value)) return '-'
-  return `$${value.toFixed(2)}`
+const formatPrice = (value: number | string | null | undefined) => {
+  if (value === undefined || value === null || value === '') return '-'
+  const numeric = typeof value === 'number' ? value : Number(value)
+  if (!Number.isFinite(numeric)) return '-'
+  return `$${numeric.toFixed(2)}`
 }
 
 const formatCheck = (value: boolean | null | undefined) => {
@@ -67,8 +69,9 @@ function CollectrImporter({ session, onSignIn, onSignUp }: CollectrImporterProps
     let hasPrice = false
     results.forEach((row) => {
       const price = row.market_price
-      if (typeof price === 'number' && Number.isFinite(price)) {
-        total += price * (row.quantity || 0)
+      const numeric = typeof price === 'number' ? price : Number(price)
+      if (Number.isFinite(numeric)) {
+        total += numeric * (row.quantity || 0)
         hasPrice = true
       }
     })

@@ -27,6 +27,13 @@ export type CatalogProductRow = {
   printing?: string | null
 }
 
+const toFiniteNumber = (value: unknown): number | null => {
+  if (value === null || value === undefined || value === '') return null
+  const numeric = typeof value === 'number' ? value : Number(value)
+  if (!Number.isFinite(numeric)) return null
+  return numeric
+}
+
 const CONDITION_RANK = new Map([
   ['near mint', 0],
   ['lightly played', 1],
@@ -48,9 +55,9 @@ const toRank = (value: string | null | undefined, rankMap: Map<string, number>) 
   return rankMap.get(normalized) ?? 50
 }
 
-const toComparablePrice = (value: number | null | undefined) => {
-  if (typeof value !== 'number' || Number.isNaN(value)) return Number.POSITIVE_INFINITY
-  return value
+const toComparablePrice = (value: unknown) => {
+  const numeric = toFiniteNumber(value)
+  return numeric === null ? Number.POSITIVE_INFINITY : numeric
 }
 
 const choosePreferredRow = (current: CatalogProductRow, candidate: CatalogProductRow) => {
@@ -109,7 +116,12 @@ export const fetchCatalogProducts = async (setNameId: number): Promise<CatalogPr
     )
     const rows = Array.isArray(payload?.rows) ? (payload.rows as CatalogProductRow[]) : []
     if (!rows.length) break
-    out.push(...rows)
+    rows.forEach((row) => {
+      out.push({
+        ...row,
+        market_price: toFiniteNumber(row?.market_price),
+      })
+    })
     if (rows.length < pageSize) break
     offset += pageSize
   }
