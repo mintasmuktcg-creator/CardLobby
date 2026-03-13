@@ -5,6 +5,11 @@ import type { SupabaseSession } from './features/shared/types'
 import AdminPortal from './features/admin/AdminPortal'
 import CollectrImporter from './features/collectr/CollectrImporter'
 import ApiDocsPage from './features/api/ApiDocsPage'
+import {
+  fetchCatalogProducts,
+  fetchCatalogSets,
+  selectPreferredProductRows,
+} from './lib/catalogApi'
 import './App.css'
 
 const CSV_FALLBACK_URL = new URL(
@@ -19,17 +24,11 @@ const CATALOGS = {
   pokemon: {
     label: 'Pokemon',
     region: 'EN',
-    setsTable: 'pokemon_sets',
-    productsTable: 'pokemon_products',
-    embedKey: 'pokemon_sets',
     storageKey: 'cardlobby.selected_set_id.pokemon',
   },
   pokemon_japan: {
     label: 'Pokemon Japan',
     region: 'JP',
-    setsTable: 'pokemon_sets',
-    productsTable: 'pokemon_products',
-    embedKey: 'pokemon_sets',
     storageKey: 'cardlobby.selected_set_id.pokemon_japan',
   },
 } as const
@@ -40,52 +39,12 @@ const getInitialCatalog = (): CatalogKey => {
   return saved === 'pokemon_japan' ? 'pokemon_japan' : 'pokemon'
 }
 
-type CardSetDbRow = {
-  id: string
-  name: string
-  code: string | null
-  release_date?: string | null
-  generation?: number | null
-}
-
-type ProductDbRow = {
-  id: string
-  tcg_product_id: number | null
-  set_id: string | null
-  name: string
-  clean_name: string | null
-  product_type: string | null
-  subtype: string | null
-  card_number: string | null
-  rarity: string | null
-  card_type: string | null
-  hp: string | null
-  stage: string | null
-  attack1: string | null
-  attack2: string | null
-  weakness: string | null
-  resistance: string | null
-  retreat_cost: string | null
-  image_url: string | null
-  image_count: number | null
-  external_url: string | null
-  modified_on: string | null
-  low_price?: number | null
-  mid_price?: number | null
-  high_price?: number | null
-  market_price?: number | null
-  direct_low_price?: number | null
-  price_updated_at?: string | null
-  currency?: string | null
-  pokemon_sets?:
-    | { id: string; name: string; code: string | null }
-    | { id: string; name: string; code: string | null }[]
-    | null
-}
-
 type CardRow = {
-  productUuid?: string | null
   productId: number
+  region: 'EN' | 'JP'
+  conditionId: number
+  rarityId: number
+  printingId: number
   productType?: string | null
   name: string
   cleanName: string
@@ -182,8 +141,13 @@ function compareCardOrder(a: CardRow, b: CardRow) {
 }
 
 function getCardKey(card: CardRow) {
-  if (card.productUuid) return card.productUuid
-  return `${card.productId}-${card.extNumber ?? 'na'}`
+  return [
+    card.region || 'EN',
+    card.productId,
+    card.conditionId,
+    card.rarityId,
+    card.printingId,
+  ].join('|')
 }
 
 function normalizeSubtype(value?: string | null) {
@@ -258,9 +222,6 @@ function App() {
   const ownedEnabled = true
 
   useEffect(() => {
-    const hasSupabaseEnv =
-      !!import.meta.env.VITE_SUPABASE_URL && !!import.meta.env.VITE_SUPABASE_ANON_KEY
-
     const fromCsvFallback = async () => {
       if (catalog !== 'pokemon') {
         setSets([])
@@ -280,9 +241,17 @@ function App() {
           skipEmptyLines: true,
           dynamicTyping: true,
           complete: (result) => {
-            const parsed = (result.data || []).filter(
-              (row: CardRow) => !!row.productId,
-            )
+            const parsed = (result.data || [])
+              .filter((row: CardRow) => !!row.productId)
+              .map((row: CardRow) => ({
+                ...row,
+                region: catalogConfig.region,
+                conditionId: Number(row.conditionId) || 0,
+                rarityId: Number(row.rarityId) || 0,
+                printingId: Number(row.printingId) || 0,
+                name: row.name || 'Unknown product',
+                cleanName: row.cleanName || row.name || 'Unknown product',
+              }))
             hydrateCards(parsed, setCards, setAvailableSubtypes, setSubtypeFilters)
             setSets([{ id: 'csv-set', name: CSV_FALLBACK_SET_TITLE }])
             setSelectedSetId('csv-set')
@@ -297,64 +266,44 @@ function App() {
       }
     }
 
-    const fromSupabase = async () => {
-      if (!hasSupabaseEnv) {
-        void fromCsvFallback()
-        return
-      }
+    const fromCatalogApi = async () => {
       setLoading(true)
+      try {
+        const setRows = await fetchCatalogSets(catalogConfig.region)
+        const setList: SetInfo[] = setRows.map((row) => ({
+          id: String(row.set_name_id),
+          name: row.name,
+          code: row.abbreviation ?? null,
+          releaseDate: row.release_date ?? null,
+          generation: null,
+        }))
 
-      // Fetch sets first. Selecting a set triggers loading its products.
-      const { data, error } = await supabase
-        .from(catalogConfig.setsTable)
-        .select('*')
-        .eq('region', catalogConfig.region)
-        .order('name', { ascending: true })
+        setList.sort((a, b) => {
+          const aDate = a.releaseDate ? Date.parse(a.releaseDate) : Number.POSITIVE_INFINITY
+          const bDate = b.releaseDate ? Date.parse(b.releaseDate) : Number.POSITIVE_INFINITY
+          if (aDate !== bDate) return aDate - bDate
+          return a.name.localeCompare(b.name)
+        })
 
-      if (error) {
+        setSets(setList)
+        const saved = localStorage.getItem(catalogConfig.storageKey)
+        const savedExists = !!saved && setList.some((entry) => entry.id === saved)
+        const defaultId =
+          (savedExists ? saved : null) ||
+          setList.find((entry) => entry.name.toLowerCase().includes('ascended heroes'))?.id ||
+          setList[0]?.id ||
+          'all'
+        setSelectedSetId(defaultId)
+      } catch (error) {
+        console.error('Failed to load catalog sets from API:', error)
         void fromCsvFallback()
-        return
+      } finally {
+        setLoading(false)
       }
-
-      const setRows = Array.isArray(data) ? (data as unknown as CardSetDbRow[]) : []
-
-      const setList: SetInfo[] = setRows.map((r) => ({
-        id: r.id,
-        name: r.name,
-        code: r.code ?? null,
-        releaseDate: r.release_date ?? null,
-        generation: typeof r.generation === 'number' ? r.generation : null,
-      }))
-
-      // Sort: generation (1-9), then release date, then name.
-      setList.sort((a, b) => {
-        const aGen = a.generation ?? 999
-        const bGen = b.generation ?? 999
-        if (aGen !== bGen) return aGen - bGen
-
-        const aDate = a.releaseDate ? Date.parse(a.releaseDate) : Number.POSITIVE_INFINITY
-        const bDate = b.releaseDate ? Date.parse(b.releaseDate) : Number.POSITIVE_INFINITY
-        if (aDate !== bDate) return aDate - bDate
-
-        return a.name.localeCompare(b.name)
-      })
-
-      setSets(setList)
-
-      const saved = localStorage.getItem(catalogConfig.storageKey)
-      const savedExists = !!saved && setList.some((s) => s.id === saved)
-      const defaultId =
-        (savedExists ? saved : null) ||
-        setList.find((s) => s.name.toLowerCase().includes('ascended heroes'))?.id ||
-        setList[0]?.id ||
-        'all'
-
-      setSelectedSetId(defaultId)
-      setLoading(false)
     }
 
-    fromSupabase()
-  }, [catalog, catalogConfig.region, catalogConfig.setsTable, catalogConfig.storageKey])
+    void fromCatalogApi()
+  }, [catalog, catalogConfig.region, catalogConfig.storageKey])
 
   useEffect(() => {
     if (typeof window !== 'undefined') {
@@ -372,11 +321,7 @@ function App() {
   }, [catalog])
 
   useEffect(() => {
-    const hasSupabaseEnv =
-      !!import.meta.env.VITE_SUPABASE_URL && !!import.meta.env.VITE_SUPABASE_ANON_KEY
-    if (!hasSupabaseEnv) return
-
-    // CSV fallback mode (used when Supabase can't load). Don't try to query Supabase by set_id.
+    // CSV fallback mode (used when API sets can't load). Don't query by set id.
     if (selectedSetId === 'csv-set') return
 
     if (!selectedSetId || selectedSetId === 'all') {
@@ -398,65 +343,41 @@ function App() {
       setSubtypeFilters(new Set())
 
       try {
-        const pageSize = 1000
-        let from = 0
-        const all: ProductDbRow[] = []
-        const embedKey = catalogConfig.embedKey
-
-        while (true) {
-
-          const { data, error } = await supabase
-            .from(catalogConfig.productsTable)
-            .select(
-              `id, tcg_product_id, set_id, name, clean_name, product_type, subtype, card_number, rarity, card_type, hp, stage, attack1, attack2, weakness, resistance, retreat_cost, image_url, image_count, external_url, modified_on, low_price, mid_price, high_price, market_price, direct_low_price, price_updated_at, currency, ${embedKey}(id,name,code)`,
-            )
-            .eq('set_id', selectedSetId)
-            .order('tcg_product_id', { ascending: true })
-            .range(from, from + pageSize - 1)
-
-          if (error) throw error
-          const page = Array.isArray(data) ? (data as unknown as ProductDbRow[]) : []
-          if (page.length === 0) break
-          all.push(...page)
-          if (page.length < pageSize) break
-          from += pageSize
+        const setNameId = Number.parseInt(selectedSetId, 10)
+        if (!Number.isFinite(setNameId) || setNameId <= 0) {
+          throw new Error('Invalid set id.')
         }
 
+        const apiRows = await fetchCatalogProducts(setNameId)
+        const preferredRows = selectPreferredProductRows(apiRows)
         if (cancelled) return
 
-        const mapped: CardRow[] = all.map((product) => {
-          const embedded = product?.[embedKey as 'pokemon_sets'] ?? null
-          const setEmbed = Array.isArray(embedded) ? embedded[0] ?? null : embedded ?? null
-          return {
-            productUuid: product?.id ?? null,
-            productId: product?.tcg_product_id ?? 0,
-            productType: product?.product_type ?? null,
-            name: product?.name ?? 'Unknown product',
-            cleanName: product?.clean_name ?? product?.name ?? 'Unknown product',
-            setId: product?.set_id ?? setEmbed?.id ?? null,
-            setName: setEmbed?.name ?? null,
-            imageUrl: product?.image_url ?? null,
-            lowPrice: product?.low_price ?? null,
-            midPrice: product?.mid_price ?? null,
-            highPrice: product?.high_price ?? null,
-            marketPrice: product?.market_price ?? null,
-            directLowPrice: product?.direct_low_price ?? null,
-            extNumber: product?.card_number ?? null,
-            extRarity: product?.rarity ?? null,
-            extCardType: product?.card_type ?? null,
-            extAttack1: product?.attack1 ?? null,
-            extAttack2: product?.attack2 ?? null,
-            extWeakness: product?.weakness ?? null,
-            extResistance: product?.resistance ?? null,
-            extRetreatCost: product?.retreat_cost ?? null,
-            extHP: product?.hp ?? null,
-            extStage: product?.stage ?? null,
-            imageCount: product?.image_count ?? null,
-            subTypeName: product?.subtype ?? null,
-            url: product?.external_url ?? null,
-            modifiedOn: product?.modified_on ?? null,
-          }
-        })
+        const mapped: CardRow[] = preferredRows
+          .map((product) => {
+            const productId = Number(product?.product_id)
+            const productName = String(product?.product_name || '').trim()
+            const cardNumber = product?.number ? String(product.number).trim() : null
+            const inferredType = parseCardNumber(cardNumber) !== null ? 'single' : 'sealed'
+            return {
+              productId: Number.isFinite(productId) ? productId : 0,
+              region: catalogConfig.region,
+              conditionId: Number(product?.condition_id) || 0,
+              rarityId: Number(product?.rarity_id) || 0,
+              printingId: Number(product?.printing_id) || 0,
+              productType: inferredType,
+              name: productName || 'Unknown product',
+              cleanName: productName || 'Unknown product',
+              setId: selectedSetId,
+              setName: product?.set_name ?? null,
+              imageUrl: product?.image_url ?? null,
+              marketPrice: product?.market_price ?? null,
+              extNumber: cardNumber,
+              extRarity: product?.rarity ?? null,
+              extCardType: product?.printing ?? null,
+              subTypeName: product?.printing ?? null,
+            }
+          })
+          .filter((row) => row.productId > 0)
 
         hydrateCards(mapped, setCards, setAvailableSubtypes, setSubtypeFilters)
       } catch (err) {
@@ -471,7 +392,7 @@ function App() {
     return () => {
       cancelled = true
     }
-  }, [catalogConfig.embedKey, catalogConfig.productsTable, catalogConfig.storageKey, selectedSetId])
+  }, [catalogConfig.region, catalogConfig.storageKey, selectedSetId])
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => setSession(data.session))
@@ -606,8 +527,21 @@ function App() {
   }, [filteredCards])
 
   const persistOwnedUpdates = async (
-    updates: { product_id: string; quantity: number }[],
-    deletes: string[],
+    updates: {
+      product_id: number
+      region: 'EN' | 'JP'
+      condition_id: number
+      rarity_id: number
+      printing_id: number
+      quantity: number
+    }[],
+    deletes: {
+      product_id: number
+      region: 'EN' | 'JP'
+      condition_id: number
+      rarity_id: number
+      printing_id: number
+    }[],
   ) => {
     if (!session || !ownedEnabled) return
     const userId = session.user.id
@@ -617,23 +551,37 @@ function App() {
         const rows = group.map((row) => ({
           user_id: userId,
           product_id: row.product_id,
+          region: row.region,
+          condition_id: row.condition_id,
+          rarity_id: row.rarity_id,
+          printing_id: row.printing_id,
           quantity: row.quantity,
         }))
         const { error } = await supabase
           .from(ownedTable)
-          .upsert(rows, { onConflict: 'user_id,product_id' })
+          .upsert(rows, {
+            onConflict: 'user_id,product_id,region,condition_id,rarity_id,printing_id',
+          })
         if (error) console.error('Failed to save owned products', error)
       }
     }
     if (deletes.length) {
-      const deleteChunks = chunk(deletes, 400)
+      const deleteChunks = chunk(deletes, 50)
       for (const group of deleteChunks) {
-        const { error } = await supabase
-          .from(ownedTable)
-          .delete()
-          .eq('user_id', userId)
-          .in('product_id', group)
-        if (error) console.error('Failed to remove owned products', error)
+        await Promise.all(
+          group.map(async (row) => {
+            const { error } = await supabase
+              .from(ownedTable)
+              .delete()
+              .eq('user_id', userId)
+              .eq('product_id', row.product_id)
+              .eq('region', row.region)
+              .eq('condition_id', row.condition_id)
+              .eq('rarity_id', row.rarity_id)
+              .eq('printing_id', row.printing_id)
+            if (error) console.error('Failed to remove owned products', error)
+          }),
+        )
       }
     }
   }
@@ -641,17 +589,43 @@ function App() {
   const bulkSetCaught = (nextValue: boolean) => {
     if (!ownedEnabled) return
     const next = { ...ownedCounts }
-    const updates: { product_id: string; quantity: number }[] = []
-    const deletes: string[] = []
+    const updates: {
+      product_id: number
+      region: 'EN' | 'JP'
+      condition_id: number
+      rarity_id: number
+      printing_id: number
+      quantity: number
+    }[] = []
+    const deletes: {
+      product_id: number
+      region: 'EN' | 'JP'
+      condition_id: number
+      rarity_id: number
+      printing_id: number
+    }[] = []
     visibleCards.forEach((card) => {
       const key = getCardKey(card)
       if (nextValue) {
         const qty = next[key] && next[key] > 0 ? next[key] : 1
         next[key] = qty
-        if (card.productUuid) updates.push({ product_id: card.productUuid, quantity: qty })
+        updates.push({
+          product_id: card.productId,
+          region: card.region,
+          condition_id: card.conditionId,
+          rarity_id: card.rarityId,
+          printing_id: card.printingId,
+          quantity: qty,
+        })
       } else {
         delete next[key]
-        if (card.productUuid) deletes.push(card.productUuid)
+        deletes.push({
+          product_id: card.productId,
+          region: card.region,
+          condition_id: card.conditionId,
+          rarity_id: card.rarityId,
+          printing_id: card.printingId,
+        })
       }
     })
     setOwnedCounts(next)
@@ -665,8 +639,8 @@ function App() {
     }
     if (cards.length === 0) return
     const productIds = cards
-      .map((card) => card.productUuid)
-      .filter((value): value is string => !!value)
+      .map((card) => card.productId)
+      .filter((value): value is number => Number.isFinite(value) && value > 0)
     if (productIds.length === 0) {
       setOwnedCounts({})
       return
@@ -677,23 +651,32 @@ function App() {
       for (const group of chunks) {
         const { data, error } = await supabase
           .from(ownedTable)
-          .select('product_id, quantity')
+          .select('product_id, region, condition_id, rarity_id, printing_id, quantity')
           .eq('user_id', session.user.id)
+          .eq('region', catalogConfig.region)
           .in('product_id', group)
         if (error) {
           console.error('Failed to load owned products', error)
           return
         }
         data?.forEach((row) => {
-          if (row.product_id && row.quantity) {
-            next[row.product_id] = row.quantity
+          const quantity = Number(row.quantity)
+          if (row.product_id && quantity > 0) {
+            const key = [
+              row.region || catalogConfig.region,
+              row.product_id,
+              Number(row.condition_id) || 0,
+              Number(row.rarity_id) || 0,
+              Number(row.printing_id) || 0,
+            ].join('|')
+            next[key] = quantity
           }
         })
       }
       setOwnedCounts(next)
     }
     void loadOwned()
-  }, [session, cards, ownedEnabled, ownedTable])
+  }, [session, cards, ownedEnabled, ownedTable, catalogConfig.region])
 
   const totalValue = useMemo(() => {
     return visibleCards.reduce((sum, card) => {
@@ -1160,19 +1143,22 @@ function App() {
                         onClick={() => {
                           if (!ownedEnabled) return
                           const next = { ...ownedCounts }
+                          const ownedRow = {
+                            product_id: card.productId,
+                            region: card.region,
+                            condition_id: card.conditionId,
+                            rarity_id: card.rarityId,
+                            printing_id: card.printingId,
+                          }
                           if (isCaught) {
                             delete next[cardKey]
-                            if (card.productUuid) {
-                              void persistOwnedUpdates([], [card.productUuid])
-                            }
+                            void persistOwnedUpdates([], [ownedRow])
                           } else {
                             next[cardKey] = 1
-                            if (card.productUuid) {
-                              void persistOwnedUpdates(
-                                [{ product_id: card.productUuid, quantity: 1 }],
-                                [],
-                              )
-                            }
+                            void persistOwnedUpdates(
+                              [{ ...ownedRow, quantity: 1 }],
+                              [],
+                            )
                           }
                           setOwnedCounts(next)
                         }}
@@ -1193,19 +1179,22 @@ function App() {
                               if (!ownedEnabled) return
                               const nextValue = Number.parseInt(e.target.value, 10)
                               const next = { ...ownedCounts }
+                              const ownedRow = {
+                                product_id: card.productId,
+                                region: card.region,
+                                condition_id: card.conditionId,
+                                rarity_id: card.rarityId,
+                                printing_id: card.printingId,
+                              }
                               if (!Number.isFinite(nextValue) || nextValue <= 0) {
                                 delete next[cardKey]
-                                if (card.productUuid) {
-                                  void persistOwnedUpdates([], [card.productUuid])
-                                }
+                                void persistOwnedUpdates([], [ownedRow])
                               } else {
                                 next[cardKey] = nextValue
-                                if (card.productUuid) {
-                                  void persistOwnedUpdates(
-                                    [{ product_id: card.productUuid, quantity: nextValue }],
-                                    [],
-                                  )
-                                }
+                                void persistOwnedUpdates(
+                                  [{ ...ownedRow, quantity: nextValue }],
+                                  [],
+                                )
                               }
                               setOwnedCounts(next)
                             }}
