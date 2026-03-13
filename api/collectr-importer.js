@@ -16,8 +16,17 @@ const IMPORT_RATE_WINDOW_MS = (() => {
   const raw = Number(process.env.COLLECTR_IMPORT_RATE_WINDOW_MS)
   return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 86_400_000
 })()
+const IMPORT_RATE_STATE_MAX_ENTRIES = (() => {
+  const raw = Number(process.env.COLLECTR_IMPORT_RATE_STATE_MAX_ENTRIES)
+  return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 50_000
+})()
+const IMPORT_RATE_STATE_PRUNE_INTERVAL_MS = (() => {
+  const raw = Number(process.env.COLLECTR_IMPORT_RATE_STATE_PRUNE_INTERVAL_MS)
+  return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 60_000
+})()
 
 const importRateState = new Map()
+let lastImportRatePruneAt = 0
 
 const extractToken = (req) => {
   const header = req.headers?.authorization || ''
@@ -35,8 +44,36 @@ const getClientIp = (req) => {
   )
 }
 
+const pruneImportRateState = (now) => {
+  if (
+    now - lastImportRatePruneAt < IMPORT_RATE_STATE_PRUNE_INTERVAL_MS &&
+    importRateState.size <= IMPORT_RATE_STATE_MAX_ENTRIES
+  ) {
+    return
+  }
+
+  for (const [key, entry] of importRateState.entries()) {
+    if (!entry || entry.resetAt <= now) {
+      importRateState.delete(key)
+    }
+  }
+
+  if (importRateState.size > IMPORT_RATE_STATE_MAX_ENTRIES) {
+    const overflow = importRateState.size - IMPORT_RATE_STATE_MAX_ENTRIES
+    const oldest = [...importRateState.entries()].sort(
+      (left, right) => (left[1]?.resetAt || 0) - (right[1]?.resetAt || 0),
+    )
+    for (let index = 0; index < overflow; index += 1) {
+      importRateState.delete(oldest[index][0])
+    }
+  }
+
+  lastImportRatePruneAt = now
+}
+
 const applyRateLimit = (key) => {
   const now = Date.now()
+  pruneImportRateState(now)
   let entry = importRateState.get(key)
   if (!entry || now >= entry.resetAt) {
     entry = { count: 0, resetAt: now + IMPORT_RATE_WINDOW_MS }
