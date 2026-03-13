@@ -77,23 +77,25 @@ export default defineConfig({
             return
           }
 
-          const supabaseUrl =
-            process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL
-          const supabaseKey =
-            process.env.SUPABASE_SERVICE_ROLE_KEY ||
-            process.env.SUPABASE_ANON_KEY ||
-            process.env.VITE_SUPABASE_ANON_KEY
+          const cardhqBaseUrl = String(
+            process.env.CARDHQ_API_BASE_URL || 'https://api.cardlobby.app',
+          )
+            .trim()
+            .replace(/\/+$/, '')
+          const cardhqApiKey = String(
+            process.env.CARDHQ_API_KEY || process.env.CARDHQ_ADMIN_API_KEY || '',
+          ).trim()
 
-          if (!supabaseUrl || !supabaseKey) {
-            sendJson(res, 500, { error: 'Supabase env vars are missing.' })
+          if (!cardhqApiKey) {
+            sendJson(res, 500, { error: 'CARDHQ_API_KEY is required.' })
             return
           }
 
           try {
             const payload = await runCollectrImport({
               url: urlParam,
-              supabaseUrl,
-              supabaseKey,
+              cardhqBaseUrl,
+              cardhqApiKey,
             })
             sendJson(res, 200, payload)
           } catch (err) {

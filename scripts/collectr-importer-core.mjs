@@ -1,5 +1,3 @@
-import { createClient } from '@supabase/supabase-js'
-
 import { assembleCollectrResults } from './collectr-importer/pipeline/assemble-stage.mjs'
 import {
   fetchCollectrSourceData,
@@ -9,6 +7,7 @@ import {
 } from './collectr-importer/pipeline/fetch-stage.mjs'
 import {
   buildCollectrBuckets,
+  fetchCardhqSetRows,
   resolveCollectrProductMatches,
 } from './collectr-importer/pipeline/match-stage.mjs'
 import { buildSetMap } from './collectr-importer/pipeline/shared.mjs'
@@ -45,31 +44,20 @@ const parseAndValidateCollectrUrl = (url) => {
   return { parsedUrl, profileId, collectionId, collectionFilters }
 }
 
-const fetchSetRows = async (supabase, region) => {
-  const { data, error } = await supabase
-    .from('pokemon_sets')
-    .select('id, name, name_other')
-    .eq('region', region)
-  if (error) throw error
-  return data || []
-}
-
-export async function runCollectrImport({ url, supabaseUrl, supabaseKey }) {
-  if (!supabaseUrl || !supabaseKey) {
-    throw new Error('Supabase env vars are missing.')
-  }
-
+export async function runCollectrImport({ url, cardhqBaseUrl, cardhqApiKey } = {}) {
   const { parsedUrl, profileId, collectionId, collectionFilters } =
     parseAndValidateCollectrUrl(url)
 
-  const supabase = createClient(supabaseUrl, supabaseKey, {
-    auth: { persistSession: false },
-  })
+  const { englishSetRows, japanSetRows, setIdRegionMap, cardhqConfig } =
+    await fetchCardhqSetRows({
+      cardhqBaseUrl,
+      cardhqApiKey,
+    })
 
-  const [englishSetRows, japanSetRows] = await Promise.all([
-    fetchSetRows(supabase, 'EN'),
-    fetchSetRows(supabase, 'JP'),
-  ])
+  if (!englishSetRows.length && !japanSetRows.length) {
+    throw new Error('No CardHQ sets available for Collectr matching.')
+  }
+
   const englishSetMap = buildSetMap(englishSetRows)
   const japanSetMap = buildSetMap(japanSetRows)
 
@@ -93,10 +81,13 @@ export async function runCollectrImport({ url, supabaseUrl, supabaseKey }) {
     missingEnglishLookup,
     missingJapanLookup,
   } = await resolveCollectrProductMatches({
-    supabase,
     productEntries,
     missingItems,
     englishSetMap,
+    japanSetMap,
+    setIdRegionMap,
+    cardhqBaseUrl: cardhqConfig.baseUrl,
+    cardhqApiKey: cardhqConfig.apiKey,
   })
 
   const results = await assembleCollectrResults({

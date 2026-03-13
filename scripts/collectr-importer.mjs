@@ -9,14 +9,17 @@ for (const p of ['.env.scripts', '.env', '.env.local']) {
   if (fs.existsSync(full)) dotenv.config({ path: full })
 }
 
-const SUPABASE_URL = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL
-const SUPABASE_KEY =
-  process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.VITE_SUPABASE_ANON_KEY
+const CARDHQ_API_BASE_URL = String(
+  process.env.CARDHQ_API_BASE_URL || 'https://api.cardlobby.app',
+)
+  .trim()
+  .replace(/\/+$/, '')
+const CARDHQ_API_KEY = String(
+  process.env.CARDHQ_API_KEY || process.env.CARDHQ_ADMIN_API_KEY || '',
+).trim()
 
-if (!SUPABASE_URL || !SUPABASE_KEY) {
-  console.error(
-    'Set SUPABASE_URL (or VITE_SUPABASE_URL) and SUPABASE_SERVICE_ROLE_KEY (or VITE_SUPABASE_ANON_KEY).',
-  )
+if (!CARDHQ_API_KEY) {
+  console.error('Set CARDHQ_API_KEY (or CARDHQ_ADMIN_API_KEY) before running importer.')
   process.exit(1)
 }
 
@@ -38,8 +41,8 @@ if (!url) {
 const run = async () => {
   const { summary, results } = await runCollectrImport({
     url,
-    supabaseUrl: SUPABASE_URL,
-    supabaseKey: SUPABASE_KEY,
+    cardhqBaseUrl: CARDHQ_API_BASE_URL,
+    cardhqApiKey: CARDHQ_API_KEY,
   })
 
   console.log('Collectr Importer')

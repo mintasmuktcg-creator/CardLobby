@@ -13,8 +13,8 @@ export type CollectrCollection = {
 
 export function runCollectrImport(args: {
   url: string
-  supabaseUrl: string
-  supabaseKey: string
+  cardhqBaseUrl?: string
+  cardhqApiKey?: string
 }): Promise<{
   summary: CollectrImportSummary
   results: unknown[]

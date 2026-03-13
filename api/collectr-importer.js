@@ -5,7 +5,14 @@ const SUPABASE_URL = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY
 const SUPABASE_AUTH_KEY = SUPABASE_SERVICE_ROLE_KEY || SUPABASE_ANON_KEY
-const SUPABASE_IMPORT_KEY = SUPABASE_SERVICE_ROLE_KEY || SUPABASE_ANON_KEY
+const CARDHQ_API_BASE_URL = String(
+  process.env.CARDHQ_API_BASE_URL || 'https://api.cardlobby.app',
+)
+  .trim()
+  .replace(/\/+$/, '')
+const CARDHQ_API_KEY = String(
+  process.env.CARDHQ_API_KEY || process.env.CARDHQ_ADMIN_API_KEY || '',
+).trim()
 const CONSUME_IMPORT_QUOTA_RPC = 'consume_collectr_import_quota'
 
 const IMPORT_RATE_LIMIT = (() => {
@@ -137,8 +144,13 @@ export default async function handler(req, res) {
     return
   }
 
-  if (!SUPABASE_URL || !SUPABASE_AUTH_KEY || !SUPABASE_IMPORT_KEY) {
+  if (!SUPABASE_URL || !SUPABASE_AUTH_KEY) {
     res.status(500).json({ error: 'Supabase env vars are missing.' })
+    return
+  }
+
+  if (!CARDHQ_API_KEY) {
+    res.status(500).json({ error: 'CARDHQ_API_KEY is required for Collectr matching.' })
     return
   }
 
@@ -184,8 +196,8 @@ export default async function handler(req, res) {
     const sanitizedUrl = String(urlParam || '').trim().replace(/\\+$/, '')
     const payload = await runCollectrImport({
       url: sanitizedUrl,
-      supabaseUrl: SUPABASE_URL,
-      supabaseKey: SUPABASE_IMPORT_KEY,
+      cardhqBaseUrl: CARDHQ_API_BASE_URL,
+      cardhqApiKey: CARDHQ_API_KEY,
     })
 
     res.status(200).json(payload)
