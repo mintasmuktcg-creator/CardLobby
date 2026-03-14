@@ -29,6 +29,7 @@ export type CollectrImportResult = {
   collectr_collection_name?: string | null
   collectr_set: string | null
   collectr_name?: string | null
+  collectr_condition?: string | null
   collectr_image_url?: string | null
   matched: boolean
   name: string | null
@@ -36,9 +37,10 @@ export type CollectrImportResult = {
   code: string | null
   product_type: string | null
   card_number: string | null
+  condition?: string | null
   rarity: string | null
   image_url?: string | null
-  market_price?: number | null
+  market_price?: number | string | null
   japanese_checks?: {
     set_match: boolean
     card_number_match: boolean

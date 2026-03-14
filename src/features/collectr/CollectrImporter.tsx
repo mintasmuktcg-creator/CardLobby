@@ -354,6 +354,11 @@ function CollectrImporter({ session, onSignIn, onSignUp }: CollectrImporterProps
                     <span>{formatPrice(row.market_price)}</span>
                   </div>
                   <div className="import-card-meta">
+                    <span>Collectr condition: {row.collectr_condition || '-'}</span>
+                    <span className="dot">|</span>
+                    <span>Matched condition: {row.condition || '-'}</span>
+                  </div>
+                  <div className="import-card-meta">
                     <span className={`pill ${row.matched ? 'success' : 'warning'}`}>
                       {row.matched ? 'Matched' : 'Unmatched'}
                     </span>

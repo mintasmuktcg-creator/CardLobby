@@ -33,11 +33,54 @@ const CONDITION_RANK = new Map([
   ['damaged', 4],
 ])
 
+const CONDITION_ALIASES = [
+  { key: 'near mint', pattern: /\b(near\s*mint|nm)\b/i },
+  { key: 'lightly played', pattern: /\b(lightly\s*played|lp)\b/i },
+  { key: 'moderately played', pattern: /\b(moderately\s*played|mp)\b/i },
+  { key: 'heavily played', pattern: /\b(heavily\s*played|hp)\b/i },
+  { key: 'damaged', pattern: /\b(damaged|dmg)\b/i },
+]
+
+const CONDITION_QUERY_LABELS = {
+  'near mint': 'Near Mint',
+  'lightly played': 'Lightly Played',
+  'moderately played': 'Moderately Played',
+  'heavily played': 'Heavily Played',
+  damaged: 'Damaged',
+}
+
 const PRINTING_RANK = new Map([
   ['normal', 0],
   ['holofoil', 1],
   ['reverse holofoil', 2],
 ])
+
+const normalizeConditionKey = (value) => {
+  const raw = String(value || '').trim().toLowerCase()
+  if (!raw) return null
+  for (const alias of CONDITION_ALIASES) {
+    if (alias.pattern.test(raw)) return alias.key
+  }
+  return raw
+}
+
+const toConditionQueryValue = (value) => {
+  const key = normalizeConditionKey(value)
+  if (!key) return null
+  return CONDITION_QUERY_LABELS[key] || String(value || '').trim() || null
+}
+
+const buildPrimaryLookupKey = (productId, condition) => {
+  const normalizedId = toPositiveInt(productId)
+  if (!normalizedId) return null
+  const conditionKey = normalizeConditionKey(condition) || ''
+  return `${normalizedId}|${conditionKey}`
+}
+
+const buildMissingLookupKey = ({ collectionKey, matchKey, collectrCondition }) => {
+  const conditionKey = normalizeConditionKey(collectrCondition) || ''
+  return `${collectionKey}|${matchKey}|${conditionKey}`
+}
 
 const normalizeRegion = (value) => {
   const normalized = String(value || '').trim().toUpperCase()
@@ -191,7 +234,17 @@ export const fetchCardhqSetRows = async ({ cardhqBaseUrl, cardhqApiKey } = {}) =
   }
 }
 
-const shouldPreferApiVariant = (candidate, current) => {
+const shouldPreferApiVariant = (candidate, current, preferredConditionKey = null) => {
+  if (preferredConditionKey) {
+    const candidateCondition = normalizeConditionKey(candidate?.condition)
+    const currentCondition = normalizeConditionKey(current?.condition)
+    const candidateMatches = candidateCondition === preferredConditionKey
+    const currentMatches = currentCondition === preferredConditionKey
+    if (candidateMatches !== currentMatches) {
+      return candidateMatches
+    }
+  }
+
   const candidateConditionRank = toRank(candidate?.condition, CONDITION_RANK)
   const currentConditionRank = toRank(current?.condition, CONDITION_RANK)
   if (candidateConditionRank !== currentConditionRank) {
@@ -241,6 +294,7 @@ const normalizeApiProductRow = ({ row, region }) => {
     name: row?.product_name ?? null,
     product_type: inferProductType(row?.number),
     card_number: row?.number ?? null,
+    condition: row?.condition ?? null,
     rarity: row?.rarity ?? null,
     image_url: row?.image_url ?? null,
     market_price: row?.market_price ?? null,
@@ -278,7 +332,10 @@ const createApiState = ({ cardhqConfig, setIdRegionMap }) => ({
   productByRegionCache: new Map(),
 })
 
-const productCacheKey = (region, productId) => `${normalizeRegion(region)}|${productId}`
+const productCacheKey = (region, productId, condition = null) => {
+  const conditionKey = normalizeConditionKey(condition) || ''
+  return `${normalizeRegion(region)}|${productId}|${conditionKey}`
+}
 
 const cacheProductRow = ({ apiState, row, region }) => {
   if (!row?.tcg_product_id) return
@@ -305,19 +362,21 @@ const fetchSetProducts = async ({ apiState, setId, region }) => {
     },
   })
 
-  const preferredByProductId = new Map()
+  const preferredByVariantKey = new Map()
   rows.forEach((row) => {
     const productId = toPositiveInt(row?.product_id)
     if (!productId) return
     const rowRegion = getRowRegion({ row, setIdRegionMap: apiState.setIdRegionMap, regionHint: regionKey })
     if (rowRegion && rowRegion !== regionKey) return
-    const current = preferredByProductId.get(productId)
+    const conditionKey = normalizeConditionKey(row?.condition) || ''
+    const variantKey = `${productId}|${conditionKey}`
+    const current = preferredByVariantKey.get(variantKey)
     if (!current || shouldPreferApiVariant(row, current)) {
-      preferredByProductId.set(productId, row)
+      preferredByVariantKey.set(variantKey, row)
     }
   })
 
-  const normalizedRows = Array.from(preferredByProductId.values())
+  const normalizedRows = Array.from(preferredByVariantKey.values())
     .map((row) => normalizeApiProductRow({ row, region: regionKey }))
     .filter((row) => !!row)
 
@@ -344,26 +403,39 @@ const fetchProductsBySetIds = async ({ apiState, setIds, region }) => {
   return out
 }
 
-const fetchProductById = async ({ apiState, productId, region }) => {
+const fetchProductById = async ({ apiState, productId, region, condition = null }) => {
   const regionKey = normalizeRegion(region)
-  const key = productCacheKey(regionKey, productId)
+  const key = productCacheKey(regionKey, productId, condition)
   if (apiState.productByRegionCache.has(key)) {
     return apiState.productByRegionCache.get(key)
   }
 
-  const rows = await fetchCardhqRows({
+  const conditionQuery = toConditionQueryValue(condition)
+  let rows = await fetchCardhqRows({
     config: apiState.cardhqConfig,
     pathname: '/products',
     baseParams: {
       product_id: productId,
+      condition: conditionQuery,
     },
   })
 
+  if (!rows.length && conditionQuery) {
+    rows = await fetchCardhqRows({
+      config: apiState.cardhqConfig,
+      pathname: '/products',
+      baseParams: {
+        product_id: productId,
+      },
+    })
+  }
+
   let bestRaw = null
+  const preferredConditionKey = normalizeConditionKey(condition)
   rows.forEach((row) => {
     const rowRegion = getRowRegion({ row, setIdRegionMap: apiState.setIdRegionMap })
     if (rowRegion && rowRegion !== regionKey) return
-    if (!bestRaw || shouldPreferApiVariant(row, bestRaw)) {
+    if (!bestRaw || shouldPreferApiVariant(row, bestRaw, preferredConditionKey)) {
       bestRaw = row
     }
   })
@@ -434,10 +506,12 @@ export const buildCollectrBuckets = ({
       gradeCompany,
       gradeId,
       isCard,
+      cardCondition,
       cardNumber,
       rarity,
     } = normalized
     const collectionKey = buildCollectionKey(itemCollectionId, itemCollectionName)
+    const normalizedCondition = normalizeConditionKey(cardCondition)
 
     const setStatus = getSetStatus(setName, englishSetMap, japanSetMap)
     if (setStatus.isJapanese) {
@@ -451,6 +525,7 @@ export const buildCollectrBuckets = ({
             collectrName,
             cardNumber,
             rarity,
+            cardCondition,
             collectrImageUrl,
             gradeCompany,
             gradeId,
@@ -478,7 +553,11 @@ export const buildCollectrBuckets = ({
         (setStatus.isJapanese
           ? buildJapanItemKey(setName, cardNumber, null)
           : buildLooseKey(setName, collectrName, cardNumber))
-      const keyedBucket = `${collectionKey}|${bucketKey}`
+      const keyedBucket = buildMissingLookupKey({
+        collectionKey,
+        matchKey: bucketKey,
+        collectrCondition: normalizedCondition,
+      })
       const current = missingMap.get(keyedBucket) || {
         productId: null,
         quantity: 0,
@@ -488,7 +567,9 @@ export const buildCollectrBuckets = ({
         collectrImageUrl: null,
         cardNumber: null,
         rarity: null,
+        collectrCondition: cardCondition || null,
         matchKey,
+        lookupKey: keyedBucket,
         collectionId: itemCollectionId || null,
         collectionName: itemCollectionName || null,
         collectionKey,
@@ -502,12 +583,16 @@ export const buildCollectrBuckets = ({
       }
       if (!current.cardNumber && cardNumber) current.cardNumber = cardNumber
       if (!current.rarity && rarity) current.rarity = rarity
+      if (!current.collectrCondition && cardCondition) {
+        current.collectrCondition = cardCondition
+      }
       current.matchKey = current.matchKey || matchKey
       missingMap.set(keyedBucket, current)
       continue
     }
 
-    const productKey = `${collectionKey}|${productId}`
+    const primaryLookupKey = buildPrimaryLookupKey(productId, normalizedCondition)
+    const productKey = `${collectionKey}|${productId}|${normalizedCondition || ''}`
     const current = productMap.get(productKey) || {
       productId,
       quantity: 0,
@@ -517,6 +602,8 @@ export const buildCollectrBuckets = ({
       collectrImageUrl: null,
       cardNumber: null,
       rarity: null,
+      collectrCondition: cardCondition || null,
+      primaryLookupKey,
       collectionId: itemCollectionId || null,
       collectionName: itemCollectionName || null,
       collectionKey,
@@ -530,6 +617,10 @@ export const buildCollectrBuckets = ({
     }
     if (!current.cardNumber && cardNumber) current.cardNumber = cardNumber
     if (!current.rarity && rarity) current.rarity = rarity
+    if (!current.collectrCondition && cardCondition) {
+      current.collectrCondition = cardCondition
+    }
+    current.primaryLookupKey = current.primaryLookupKey || primaryLookupKey
     productMap.set(productKey, current)
   }
 
@@ -578,33 +669,71 @@ const prefetchSetProductsForMatching = async ({
 }
 
 const buildPrimaryLookups = async ({ apiState, productEntries }) => {
-  const englishIdSet = new Set()
-  const japanIdSet = new Set()
+  const requests = new Map()
   for (const entry of productEntries) {
     const productId = toPositiveInt(entry?.productId)
     if (!productId) continue
-    if (entry?.isJapanese) {
-      japanIdSet.add(productId)
-    } else {
-      englishIdSet.add(productId)
+    const region = entry?.isJapanese ? 'JP' : 'EN'
+    const lookupKey =
+      entry?.primaryLookupKey || buildPrimaryLookupKey(productId, entry?.collectrCondition)
+    if (!lookupKey) continue
+    const dedupeKey = `${region}|${lookupKey}`
+    if (requests.has(dedupeKey)) continue
+    requests.set(dedupeKey, {
+      region,
+      productId,
+      collectrCondition: entry?.collectrCondition || null,
+      lookupKey,
+    })
+  }
+
+  const englishLookup = new Map()
+  const japanLookup = new Map()
+  const requestList = Array.from(requests.values())
+  const groups = chunk(requestList, 20)
+
+  for (const group of groups) {
+    const rows = await Promise.all(
+      group.map((request) =>
+        fetchProductById({
+          apiState,
+          productId: request.productId,
+          region: request.region,
+          condition: request.collectrCondition,
+        }),
+      ),
+    )
+
+    rows.forEach((row, index) => {
+      const request = group[index]
+      const target = request.region === 'JP' ? japanLookup : englishLookup
+      target.set(request.lookupKey, row || null)
+    })
+  }
+
+  return { englishLookup, japanLookup }
+}
+
+const pickBestCandidate = ({
+  list,
+  collectrCondition,
+  collectrName = null,
+}) => {
+  if (!Array.isArray(list) || !list.length) return null
+  const preferredConditionKey = normalizeConditionKey(collectrCondition)
+  const byName = collectrName
+    ? list.filter((row) => compareNamesLike(row?.name, collectrName))
+    : list
+  const pool = byName.length ? byName : list
+
+  let best = null
+  pool.forEach((row) => {
+    if (!best || shouldPreferApiVariant(row, best, preferredConditionKey)) {
+      best = row
     }
-  }
-
-  const englishRows = await fetchProductsByIds({
-    apiState,
-    ids: Array.from(englishIdSet),
-    region: 'EN',
-  })
-  const japanRows = await fetchProductsByIds({
-    apiState,
-    ids: Array.from(japanIdSet),
-    region: 'JP',
   })
 
-  return {
-    englishLookup: new Map(englishRows.map((row) => [row.tcg_product_id, row])),
-    japanLookup: new Map(japanRows.map((row) => [row.tcg_product_id, row])),
-  }
+  return best
 }
 
 const matchMissingItems = async ({
@@ -649,7 +778,13 @@ const matchMissingItems = async ({
     if (!baseKey || !baseKey.replace(/\|/g, '').trim()) return
     const collectionKey =
       item.collectionKey || buildCollectionKey(item.collectionId, item.collectionName)
-    const itemKey = `${collectionKey}|${baseKey}`
+    const itemKey =
+      item.lookupKey ||
+      buildMissingLookupKey({
+        collectionKey,
+        matchKey: baseKey,
+        collectrCondition: item.collectrCondition,
+      })
     const numberKey = normalizeCardNumberForMatch(item.cardNumber)
     const idsForItem = itemSetIds.get(item) || []
     let matched = null
@@ -657,10 +792,11 @@ const matchMissingItems = async ({
       for (const setId of idsForItem) {
         const list = index.get(`${setId}|${numberKey}`) || []
         if (!list.length) continue
-        if (item.collectrName) {
-          matched = list.find((row) => compareNamesLike(row?.name, item.collectrName))
-        }
-        if (!matched) matched = list[0]
+        matched = pickBestCandidate({
+          list,
+          collectrCondition: item.collectrCondition,
+          collectrName: item.collectrName,
+        })
         if (matched) break
       }
     }
@@ -727,10 +863,11 @@ const matchJapaneseMissingItems = async ({ apiState, items, japanSetMap }) => {
       for (const setId of idsForItem) {
         const list = index.get(`${setId}|${numberKey}`) || []
         if (!list.length) continue
-        if (collectrName) {
-          matched = list.find((row) => compareNamesLike(row?.name, collectrName))
-        }
-        if (!matched) matched = list[0]
+        matched = pickBestCandidate({
+          list,
+          collectrCondition: item.collectrCondition,
+          collectrName,
+        })
         if (matched) break
       }
     }
@@ -748,11 +885,22 @@ const matchJapaneseMissingItems = async ({ apiState, items, japanSetMap }) => {
     })
     item.japaneseChecks = checks
 
-    const itemKey = item.matchKey || buildJapanItemKey(collectrSet, rawCardNumber, collectrName)
-    if (!itemKey) continue
     const collectionKey =
       item.collectionKey || buildCollectionKey(item.collectionId, item.collectionName)
-    lookup.set(`${collectionKey}|${itemKey}`, { product: matched || null, checks })
+    const itemKey =
+      item.lookupKey ||
+      (() => {
+        const fallbackKey =
+          item.matchKey || buildJapanItemKey(collectrSet, rawCardNumber, collectrName)
+        if (!fallbackKey) return null
+        return buildMissingLookupKey({
+          collectionKey,
+          matchKey: fallbackKey,
+          collectrCondition: item.collectrCondition,
+        })
+      })()
+    if (!itemKey) continue
+    lookup.set(itemKey, { product: matched || null, checks })
   }
 
   return lookup
@@ -762,21 +910,31 @@ const buildFallbackJapanItems = ({ productEntries, japanLookup }) => {
   const fallbackJapanItems = []
   productEntries.forEach((collectr) => {
     if (!collectr?.isJapanese) return
-    if (japanLookup.has(collectr.productId)) return
+    const primaryLookupKey =
+      collectr.primaryLookupKey ||
+      buildPrimaryLookupKey(collectr.productId, collectr.collectrCondition)
+    if (primaryLookupKey && japanLookup.get(primaryLookupKey)) return
     const matchKey =
       buildJapanItemKey(collectr.setName, collectr.cardNumber, collectr.collectrName) ||
       buildLooseKey(collectr.setName, collectr.collectrName, collectr.cardNumber)
     if (!matchKey) return
+    const collectionKey =
+      collectr.collectionKey ||
+      buildCollectionKey(collectr.collectionId, collectr.collectionName)
     fallbackJapanItems.push({
       setName: collectr.setName,
       collectrName: collectr.collectrName,
       cardNumber: collectr.cardNumber,
+      collectrCondition: collectr.collectrCondition || null,
       matchKey,
       collectionId: collectr.collectionId || null,
       collectionName: collectr.collectionName || null,
-      collectionKey:
-        collectr.collectionKey ||
-        buildCollectionKey(collectr.collectionId, collectr.collectionName),
+      collectionKey,
+      lookupKey: buildMissingLookupKey({
+        collectionKey,
+        matchKey,
+        collectrCondition: collectr.collectrCondition,
+      }),
     })
   })
   return fallbackJapanItems

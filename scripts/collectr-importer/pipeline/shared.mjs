@@ -337,7 +337,20 @@ export const normalizeCollectrItem = (item) => {
     item.grade_value ??
     item.gradeValue ??
     null
-  const cardCondition = item.card_condition ?? item.cardCondition ?? null
+  let cardCondition =
+    item.card_condition ??
+    item.cardCondition ??
+    item.condition ??
+    item.product_condition ??
+    item.productCondition ??
+    null
+  if (!cardCondition) {
+    cardCondition = findFirstValue(
+      item,
+      [/card_condition/i, /product_condition/i, /^condition$/i],
+      (value) => typeof value === 'string' && value.trim().length > 0,
+    )
+  }
   const isCard =
     typeof item.is_card === 'boolean'
       ? item.is_card
@@ -410,7 +423,11 @@ export const normalizeCollectrItem = (item) => {
       )
       console.log(
         '[collectr-debug] Extracted fields:',
-        JSON.stringify({ collectrName, setName, cardNumber, rarity }, null, 2),
+        JSON.stringify(
+          { collectrName, setName, cardNumber, rarity, cardCondition },
+          null,
+          2,
+        ),
       )
     }
   }

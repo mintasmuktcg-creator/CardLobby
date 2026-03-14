@@ -12,6 +12,31 @@ const getSetEmbed = (product) => {
   return Array.isArray(embedded) ? embedded[0] ?? null : embedded ?? null
 }
 
+const normalizeConditionKey = (value) => {
+  const raw = String(value || '').trim().toLowerCase()
+  if (!raw) return ''
+  if (/\b(near\s*mint|nm)\b/i.test(raw)) return 'near mint'
+  if (/\b(lightly\s*played|lp)\b/i.test(raw)) return 'lightly played'
+  if (/\b(moderately\s*played|mp)\b/i.test(raw)) return 'moderately played'
+  if (/\b(heavily\s*played|hp)\b/i.test(raw)) return 'heavily played'
+  if (/\b(damaged|dmg)\b/i.test(raw)) return 'damaged'
+  return raw
+}
+
+const buildPrimaryLookupKey = (productId, collectrCondition) => {
+  const numeric = Number(productId)
+  if (!Number.isFinite(numeric) || numeric <= 0) return null
+  return `${Math.floor(numeric)}|${normalizeConditionKey(collectrCondition)}`
+}
+
+const buildMissingLookupKey = ({
+  collectionKey,
+  matchKey,
+  collectrCondition,
+}) => {
+  return `${collectionKey}|${matchKey}|${normalizeConditionKey(collectrCondition)}`
+}
+
 const appendDirectProductMatches = ({
   results,
   productEntries,
@@ -21,8 +46,11 @@ const appendDirectProductMatches = ({
 }) => {
   productEntries.forEach((collectr) => {
     const isJapanese = collectr?.isJapanese
+    const primaryLookupKey =
+      collectr.primaryLookupKey ||
+      buildPrimaryLookupKey(collectr.productId, collectr.collectrCondition)
     let product =
-      (isJapanese ? japanLookup : englishLookup).get(collectr.productId) || null
+      (isJapanese ? japanLookup : englishLookup).get(primaryLookupKey) || null
     const collectrSet = collectr.setName || null
     let japaneseChecks = null
 
@@ -37,8 +65,15 @@ const appendDirectProductMatches = ({
         const collectionKey =
           collectr.collectionKey ||
           buildCollectionKey(collectr.collectionId, collectr.collectionName)
-        const fallback = matchKey
-          ? missingJapanLookup.get(`${collectionKey}|${matchKey}`) || null
+        const fallbackLookupKey = matchKey
+          ? buildMissingLookupKey({
+              collectionKey,
+              matchKey,
+              collectrCondition: collectr.collectrCondition,
+            })
+          : null
+        const fallback = fallbackLookupKey
+          ? missingJapanLookup.get(fallbackLookupKey) || null
           : null
         if (fallback?.product) {
           product = fallback.product
@@ -80,6 +115,7 @@ const appendDirectProductMatches = ({
       collectr_collection_name: collectr.collectionName || null,
       collectr_set: collectrSet,
       collectr_name: collectr.collectrName || null,
+      collectr_condition: collectr.collectrCondition || null,
       collectr_image_url: collectr.collectrImageUrl || null,
       matched: !!product,
       name: product?.name ?? null,
@@ -87,6 +123,7 @@ const appendDirectProductMatches = ({
       code: setEmbed?.code ?? null,
       product_type: product?.product_type ?? null,
       card_number: product?.card_number ?? null,
+      condition: product?.condition ?? null,
       rarity: product?.rarity ?? null,
       image_url: product?.image_url ?? null,
       market_price: product?.market_price ?? null,
@@ -116,7 +153,15 @@ const appendMissingMatches = ({
             collectr.collectrName,
           )
         : buildMatchKey(collectr.setName, collectr.collectrName, collectr.cardNumber))
-    const lookupKey = matchKey ? `${collectionKey}|${matchKey}` : null
+    const lookupKey =
+      collectr.lookupKey ||
+      (matchKey
+        ? buildMissingLookupKey({
+            collectionKey,
+            matchKey,
+            collectrCondition: collectr.collectrCondition,
+          })
+        : null)
     const matchInfo = isJapanese && lookupKey ? lookup.get(lookupKey) || null : null
     const product = isJapanese
       ? matchInfo?.product || null
@@ -135,6 +180,7 @@ const appendMissingMatches = ({
       collectr_collection_name: collectr.collectionName || null,
       collectr_set: collectr.setName || null,
       collectr_name: collectr.collectrName || null,
+      collectr_condition: collectr.collectrCondition || null,
       collectr_image_url: collectr.collectrImageUrl || null,
       matched: !!product,
       name: product?.name ?? collectr.collectrName ?? null,
@@ -142,6 +188,7 @@ const appendMissingMatches = ({
       code: setEmbed?.code ?? null,
       product_type: product?.product_type ?? null,
       card_number: product?.card_number ?? collectr.cardNumber ?? null,
+      condition: product?.condition ?? null,
       rarity: product?.rarity ?? collectr.rarity ?? null,
       image_url: product?.image_url ?? null,
       market_price: product?.market_price ?? null,
