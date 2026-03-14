@@ -82,6 +82,40 @@ const buildMissingLookupKey = ({ collectionKey, matchKey, collectrCondition }) =
   return `${collectionKey}|${matchKey}|${conditionKey}`
 }
 
+const normalizeSkippedBucketPart = (value) => String(value ?? '').trim().toLowerCase()
+
+const buildSkippedBucketKey = ({
+  collectionKey,
+  productId,
+  setName,
+  collectrName,
+  cardNumber,
+  collectrCondition,
+  isJapanese,
+  gradeCompany,
+  gradeId,
+}) => {
+  const conditionKey = normalizeConditionKey(collectrCondition) || ''
+  const gradeCompanyKey = normalizeSkippedBucketPart(gradeCompany)
+  const gradeIdKey = normalizeSkippedBucketPart(gradeId)
+  const normalizedProductId = toPositiveInt(productId)
+
+  if (normalizedProductId) {
+    return `${collectionKey}|graded|${normalizedProductId}|${conditionKey}|${gradeCompanyKey}|${gradeIdKey}`
+  }
+
+  const matchKey =
+    (isJapanese
+      ? buildJapanItemKey(setName, cardNumber, collectrName)
+      : buildMatchKey(setName, collectrName, cardNumber)) ||
+    (isJapanese
+      ? buildJapanItemKey(setName, cardNumber, null)
+      : buildLooseKey(setName, collectrName, cardNumber)) ||
+    `${normalizeSkippedBucketPart(setName)}|${normalizeSkippedBucketPart(collectrName)}|${normalizeSkippedBucketPart(cardNumber)}`
+
+  return `${collectionKey}|graded|${matchKey}|${conditionKey}|${gradeCompanyKey}|${gradeIdKey}`
+}
+
 const normalizeRegion = (value) => {
   const normalized = String(value || '').trim().toUpperCase()
   return normalized === 'JP' ? 'JP' : 'EN'
@@ -489,6 +523,7 @@ export const buildCollectrBuckets = ({
 }) => {
   const productMap = new Map()
   const missingMap = new Map()
+  const skippedMap = new Map()
   let skippedGraded = 0
 
   for (const item of collectrItems) {
@@ -541,6 +576,55 @@ export const buildCollectrBuckets = ({
 
     if (isCollectrGraded({ gradeCompany, gradeId, isCard })) {
       skippedGraded += 1
+      const skippedKey = buildSkippedBucketKey({
+        collectionKey,
+        productId,
+        setName,
+        collectrName,
+        cardNumber,
+        collectrCondition: normalizedCondition,
+        isJapanese: setStatus.isJapanese,
+        gradeCompany,
+        gradeId,
+      })
+      const current = skippedMap.get(skippedKey) || {
+        productId: productId || null,
+        quantity: 0,
+        setName,
+        isJapanese: setStatus.isJapanese,
+        collectrName: null,
+        collectrImageUrl: null,
+        cardNumber: null,
+        rarity: null,
+        collectrCondition: cardCondition || null,
+        collectionId: itemCollectionId || null,
+        collectionName: itemCollectionName || null,
+        collectionKey,
+        gradeCompany: gradeCompany || null,
+        gradeId: gradeId ?? null,
+      }
+      current.quantity += quantity
+      if (!current.setName && setName) current.setName = setName
+      current.isJapanese = current.isJapanese || setStatus.isJapanese
+      if (!current.collectrName && collectrName) current.collectrName = collectrName
+      if (!current.collectrImageUrl && collectrImageUrl) {
+        current.collectrImageUrl = collectrImageUrl
+      }
+      if (!current.cardNumber && cardNumber) current.cardNumber = cardNumber
+      if (!current.rarity && rarity) current.rarity = rarity
+      if (!current.collectrCondition && cardCondition) {
+        current.collectrCondition = cardCondition
+      }
+      if (!current.gradeCompany && gradeCompany) current.gradeCompany = gradeCompany
+      if (
+        (current.gradeId === null || current.gradeId === undefined || current.gradeId === '') &&
+        gradeId !== null &&
+        gradeId !== undefined &&
+        String(gradeId).trim()
+      ) {
+        current.gradeId = gradeId
+      }
+      skippedMap.set(skippedKey, current)
       continue
     }
 
@@ -627,6 +711,7 @@ export const buildCollectrBuckets = ({
   return {
     productEntries: Array.from(productMap.values()),
     missingItems: Array.from(missingMap.values()),
+    skippedGradedItems: Array.from(skippedMap.values()),
     skippedGraded,
   }
 }

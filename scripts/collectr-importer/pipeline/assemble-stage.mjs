@@ -118,6 +118,10 @@ const appendDirectProductMatches = ({
       collectr_condition: collectr.collectrCondition || null,
       collectr_image_url: collectr.collectrImageUrl || null,
       matched: !!product,
+      status: product ? 'matched' : 'unmatched',
+      skip_reason: null,
+      grade_company: null,
+      grade_id: null,
       name: product?.name ?? null,
       set: setEmbed?.name ?? null,
       code: setEmbed?.code ?? null,
@@ -183,6 +187,10 @@ const appendMissingMatches = ({
       collectr_condition: collectr.collectrCondition || null,
       collectr_image_url: collectr.collectrImageUrl || null,
       matched: !!product,
+      status: product ? 'matched' : 'unmatched',
+      skip_reason: null,
+      grade_company: null,
+      grade_id: null,
       name: product?.name ?? collectr.collectrName ?? null,
       set: setEmbed?.name ?? null,
       code: setEmbed?.code ?? null,
@@ -193,6 +201,36 @@ const appendMissingMatches = ({
       image_url: product?.image_url ?? null,
       market_price: product?.market_price ?? null,
       japanese_checks: japaneseChecks,
+    })
+  })
+}
+
+const appendSkippedGradedMatches = ({ results, skippedGradedItems }) => {
+  skippedGradedItems.forEach((collectr) => {
+    results.push({
+      tcg_product_id: collectr.productId ?? null,
+      quantity: collectr.quantity,
+      collectr_collection_id: collectr.collectionId || null,
+      collectr_collection_name: collectr.collectionName || null,
+      collectr_set: collectr.setName || null,
+      collectr_name: collectr.collectrName || null,
+      collectr_condition: collectr.collectrCondition || null,
+      collectr_image_url: collectr.collectrImageUrl || null,
+      matched: false,
+      status: 'skipped-graded',
+      skip_reason: 'graded',
+      grade_company: collectr.gradeCompany || null,
+      grade_id: collectr.gradeId ?? null,
+      name: collectr.collectrName || null,
+      set: null,
+      code: null,
+      product_type: null,
+      card_number: collectr.cardNumber || null,
+      condition: null,
+      rarity: collectr.rarity || null,
+      image_url: null,
+      market_price: null,
+      japanese_checks: null,
     })
   })
 }
@@ -210,6 +248,7 @@ const applyCardNumberLookup = ({ results, cardNumberLookup }) => {
 export const assembleCollectrResults = async ({
   productEntries,
   missingItems,
+  skippedGradedItems,
   englishLookup,
   japanLookup,
   missingEnglishLookup,
@@ -231,6 +270,10 @@ export const assembleCollectrResults = async ({
     missingItems,
     missingEnglishLookup,
     missingJapanLookup,
+  })
+  appendSkippedGradedMatches({
+    results,
+    skippedGradedItems,
   })
 
   let cardNumberLookup = htmlCardNumberLookup

@@ -22,6 +22,8 @@ export type CollectrCollection = {
   [key: string]: unknown
 }
 
+export type CollectrImportResultStatus = 'matched' | 'unmatched' | 'skipped-graded'
+
 export type CollectrImportResult = {
   tcg_product_id: number | null
   quantity: number
@@ -32,6 +34,10 @@ export type CollectrImportResult = {
   collectr_condition?: string | null
   collectr_image_url?: string | null
   matched: boolean
+  status?: CollectrImportResultStatus
+  skip_reason?: 'graded' | null
+  grade_company?: string | null
+  grade_id?: string | number | null
   name: string | null
   set: string | null
   code: string | null

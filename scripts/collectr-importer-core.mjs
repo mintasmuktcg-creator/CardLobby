@@ -69,11 +69,12 @@ export async function runCollectrImport({ url, cardhqBaseUrl, cardhqApiKey } = {
       collectionFilters,
     })
 
-  const { productEntries, missingItems, skippedGraded } = buildCollectrBuckets({
-    collectrItems,
-    englishSetMap,
-    japanSetMap,
-  })
+  const { productEntries, missingItems, skippedGradedItems, skippedGraded } =
+    buildCollectrBuckets({
+      collectrItems,
+      englishSetMap,
+      japanSetMap,
+    })
 
   const {
     englishLookup,
@@ -93,6 +94,7 @@ export async function runCollectrImport({ url, cardhqBaseUrl, cardhqApiKey } = {
   const results = await assembleCollectrResults({
     productEntries,
     missingItems,
+    skippedGradedItems,
     englishLookup,
     japanLookup,
     missingEnglishLookup,

@@ -3,6 +3,7 @@ import type { ChangeEvent } from 'react'
 import type {
   CollectrCollection,
   CollectrImportResult,
+  CollectrImportResultStatus,
   CollectrImportSummary,
   SupabaseSession,
 } from '../shared/types'
@@ -14,12 +15,67 @@ type CollectrImporterProps = {
 }
 
 const COLLECTR_COLLECTIONS_CACHE_KEY = 'cardlobby.collectr.collections'
+const RESULT_TABS: Array<{
+  id: CollectrImportResultStatus
+  label: string
+  emptyMessage: string
+}> = [
+  {
+    id: 'matched',
+    label: 'Matched cards',
+    emptyMessage: 'No matched cards in this collection.',
+  },
+  {
+    id: 'unmatched',
+    label: 'Unmatched cards',
+    emptyMessage: 'No unmatched cards in this collection.',
+  },
+  {
+    id: 'skipped-graded',
+    label: 'Skipped cards due to grading',
+    emptyMessage: 'No cards were skipped for grading in this collection.',
+  },
+]
 
 const formatPrice = (value: number | string | null | undefined) => {
   if (value === undefined || value === null || value === '') return '-'
   const numeric = typeof value === 'number' ? value : Number(value)
   if (!Number.isFinite(numeric)) return '-'
   return `$${numeric.toFixed(2)}`
+}
+
+const getResultStatus = (row: CollectrImportResult): CollectrImportResultStatus => {
+  if (
+    row.status === 'matched' ||
+    row.status === 'unmatched' ||
+    row.status === 'skipped-graded'
+  ) {
+    return row.status
+  }
+  if (row.skip_reason === 'graded') return 'skipped-graded'
+  return row.matched ? 'matched' : 'unmatched'
+}
+
+const getDefaultResultTab = (
+  rows: CollectrImportResult[],
+): CollectrImportResultStatus => {
+  return (
+    RESULT_TABS.find((tab) =>
+      rows.some((row) => getResultStatus(row) === tab.id),
+    )?.id || 'matched'
+  )
+}
+
+const getStatusLabel = (status: CollectrImportResultStatus) => {
+  if (status === 'matched') return 'Matched'
+  if (status === 'unmatched') return 'Unmatched'
+  return 'Skipped graded'
+}
+
+const getStatusPillClass = (status: CollectrImportResultStatus) => {
+  if (status === 'matched') return 'success'
+  if (status === 'unmatched') return 'warning'
+  return 'skip'
 }
 
 const formatCheck = (value: boolean | null | undefined) => {
@@ -54,6 +110,19 @@ const formatError = (err: unknown): string => {
   return String(err)
 }
 
+const formatGradeLabel = (
+  company: string | null | undefined,
+  gradeId: string | number | null | undefined,
+) => {
+  const companyLabel =
+    typeof company === 'string' && company.trim().length > 0 ? company.trim() : null
+  const gradeLabel =
+    gradeId === null || gradeId === undefined ? null : String(gradeId).trim() || null
+
+  if (companyLabel && gradeLabel) return `${companyLabel} ${gradeLabel}`
+  return companyLabel || gradeLabel
+}
+
 function CollectrImporter({ session, onSignIn, onSignUp }: CollectrImporterProps) {
   const [url, setUrl] = useState('')
   const [status, setStatus] = useState<'idle' | 'loading' | 'done' | 'error'>('idle')
@@ -62,6 +131,7 @@ function CollectrImporter({ session, onSignIn, onSignUp }: CollectrImporterProps
   const [results, setResults] = useState<CollectrImportResult[]>([])
   const [collections, setCollections] = useState<CollectrCollection[]>([])
   const [selectedCollectionId, setSelectedCollectionId] = useState('')
+  const [activeTab, setActiveTab] = useState<CollectrImportResultStatus>('matched')
   const isSignedIn = Boolean(session?.access_token)
   const totalMarketValue = useMemo(() => {
     if (!results.length) return null
@@ -77,6 +147,23 @@ function CollectrImporter({ session, onSignIn, onSignUp }: CollectrImporterProps
     })
     return hasPrice ? total : null
   }, [results])
+  const resultCounts = useMemo(() => {
+    const counts: Record<CollectrImportResultStatus, number> = {
+      matched: 0,
+      unmatched: 0,
+      'skipped-graded': 0,
+    }
+    results.forEach((row) => {
+      counts[getResultStatus(row)] += 1
+    })
+    return counts
+  }, [results])
+  const visibleResults = useMemo(
+    () => results.filter((row) => getResultStatus(row) === activeTab),
+    [activeTab, results],
+  )
+  const activeTabConfig =
+    RESULT_TABS.find((tab) => tab.id === activeTab) ?? RESULT_TABS[0]
 
   const buildResultsByCollection = (rows: CollectrImportResult[]) => {
     const map: Record<string, CollectrImportResult[]> = {}
@@ -119,6 +206,20 @@ function CollectrImporter({ session, onSignIn, onSignUp }: CollectrImporterProps
     }
   }
 
+  const syncResults = (
+    nextRows: CollectrImportResult[],
+    options: { resetTab?: boolean } = {},
+  ) => {
+    setResults(nextRows)
+    setActiveTab((current) => {
+      if (!nextRows.length) return 'matched'
+      if (options.resetTab) return getDefaultResultTab(nextRows)
+      return nextRows.some((row) => getResultStatus(row) === current)
+        ? current
+        : getDefaultResultTab(nextRows)
+    })
+  }
+
   const applyCollectionFromCache = (
     collectionId: string,
     fallback: CollectrImportResult[],
@@ -128,9 +229,9 @@ function CollectrImporter({ session, onSignIn, onSignUp }: CollectrImporterProps
       cached?.resultsByCollection?.[collectionId] ??
       cached?.resultsByCollection?.[collectionId || 'unknown']
     if (next) {
-      setResults(next)
+      syncResults(next)
     } else {
-      setResults(fallback)
+      syncResults(fallback)
     }
   }
 
@@ -153,6 +254,7 @@ function CollectrImporter({ session, onSignIn, onSignUp }: CollectrImporterProps
     setResults([])
     setCollections([])
     setSelectedCollectionId('')
+    setActiveTab('matched')
 
     try {
       const params = new URLSearchParams({ url: trimmed })
@@ -195,12 +297,12 @@ function CollectrImporter({ session, onSignIn, onSignUp }: CollectrImporterProps
         const cached = writeCollectionCache(nextCollections, nextResults)
         setSelectedCollectionId(defaultId)
         if (defaultId && cached?.[defaultId]) {
-          setResults(cached[defaultId])
+          syncResults(cached[defaultId], { resetTab: true })
         } else {
-          setResults(nextResults)
+          syncResults(nextResults, { resetTab: true })
         }
       } else {
-        setResults(nextResults)
+        syncResults(nextResults, { resetTab: true })
       }
       setStatus('done')
     } catch (err) {
@@ -308,25 +410,53 @@ function CollectrImporter({ session, onSignIn, onSignUp }: CollectrImporterProps
           <div className="pill muted">Imported cards</div>
           <span className="swatch-note">
             {results.length > 0
-              ? `Showing ${results.length} results.`
+              ? `Showing ${visibleResults.length} of ${results.length} results in ${activeTabConfig.label.toLowerCase()}.`
               : status === 'loading'
                 ? 'Importing...'
                 : 'Run an import to see results.'}
           </span>
         </div>
-        <div className="import-grid">
-          {results.map((row, index) => {
+        {results.length > 0 && (
+          <div className="importer-tabs" role="tablist" aria-label="Import result categories">
+            {RESULT_TABS.map((tab) => (
+              <button
+                key={tab.id}
+                type="button"
+                role="tab"
+                aria-selected={activeTab === tab.id}
+                className={`importer-tab${activeTab === tab.id ? ' active' : ''}`}
+                onClick={() => setActiveTab(tab.id)}
+              >
+                <span>{tab.label}</span>
+                <span className="importer-tab-count">{resultCounts[tab.id]}</span>
+              </button>
+            ))}
+          </div>
+        )}
+        {results.length > 0 && visibleResults.length === 0 ? (
+          <div className="importer-empty">{activeTabConfig.emptyMessage}</div>
+        ) : (
+          <div className="import-grid">
+            {visibleResults.map((row, index) => {
+            const rowStatus = getResultStatus(row)
             const displayName = row.name || row.collectr_name || 'Unknown product'
             const displaySet = row.set || row.collectr_set || 'Unknown set'
             const imageUrl = row.image_url || row.collectr_image_url || null
             const japaneseChecks = row.japanese_checks ?? null
-            const key = row.tcg_product_id
-              ? `${row.tcg_product_id}-${row.collectr_set ?? 'set'}`
-              : `${index}-${row.collectr_set ?? 'set'}`
+            const gradeLabel = formatGradeLabel(row.grade_company, row.grade_id)
+            const key = [
+              rowStatus,
+              row.tcg_product_id ?? 'no-product',
+              row.collectr_set ?? 'set',
+              row.collectr_name ?? row.name ?? `row-${index}`,
+              row.collectr_condition ?? row.condition ?? 'condition',
+              row.grade_company ?? 'grade-company',
+              row.grade_id ?? 'grade-id',
+            ].join('-')
             return (
               <article
                 key={key}
-                className={`import-card${row.matched ? '' : ' unmatched'}`}
+                className={`import-card ${rowStatus}`}
               >
                 <div className="import-card-media">
                   {imageUrl ? (
@@ -348,19 +478,38 @@ function CollectrImporter({ session, onSignIn, onSignUp }: CollectrImporterProps
                     <span className="dot">|</span>
                     <span>{row.rarity || '-'}</span>
                   </div>
+                  {rowStatus === 'skipped-graded' ? (
+                    <>
+                      <div className="import-card-meta">
+                        <span>Collectr condition: {row.collectr_condition || '-'}</span>
+                        {gradeLabel && (
+                          <>
+                            <span className="dot">|</span>
+                            <span>Grade: {gradeLabel}</span>
+                          </>
+                        )}
+                      </div>
+                      <div className="import-card-meta">
+                        <span>Skipped because graded cards are excluded from import.</span>
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <div className="import-card-meta">
+                        <span>{row.product_type || '-'}</span>
+                        <span className="dot">|</span>
+                        <span>{formatPrice(row.market_price)}</span>
+                      </div>
+                      <div className="import-card-meta">
+                        <span>Collectr condition: {row.collectr_condition || '-'}</span>
+                        <span className="dot">|</span>
+                        <span>Matched condition: {row.condition || '-'}</span>
+                      </div>
+                    </>
+                  )}
                   <div className="import-card-meta">
-                    <span>{row.product_type || '-'}</span>
-                    <span className="dot">|</span>
-                    <span>{formatPrice(row.market_price)}</span>
-                  </div>
-                  <div className="import-card-meta">
-                    <span>Collectr condition: {row.collectr_condition || '-'}</span>
-                    <span className="dot">|</span>
-                    <span>Matched condition: {row.condition || '-'}</span>
-                  </div>
-                  <div className="import-card-meta">
-                    <span className={`pill ${row.matched ? 'success' : 'warning'}`}>
-                      {row.matched ? 'Matched' : 'Unmatched'}
+                    <span className={`pill ${getStatusPillClass(rowStatus)}`}>
+                      {getStatusLabel(rowStatus)}
                     </span>
                   </div>
                   {japaneseChecks && (
@@ -383,12 +532,12 @@ function CollectrImporter({ session, onSignIn, onSignUp }: CollectrImporterProps
                 </div>
               </article>
             )
-          })}
-        </div>
+            })}
+          </div>
+        )}
       </div>
     </section>
   )
 }
-
 
 export default CollectrImporter

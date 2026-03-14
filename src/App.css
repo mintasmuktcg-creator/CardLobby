@@ -1116,6 +1116,60 @@
   flex-wrap: wrap;
 }
 
+.importer-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.importer-tab {
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.04);
+  color: #f6edff;
+  border-radius: 999px;
+  padding: 10px 14px;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  font: inherit;
+  cursor: pointer;
+  transition:
+    border-color 120ms ease,
+    background 120ms ease,
+    color 120ms ease,
+    transform 120ms ease;
+}
+
+.importer-tab:hover {
+  border-color: rgba(255, 255, 255, 0.22);
+  transform: translateY(-1px);
+}
+
+.importer-tab.active {
+  border-color: rgba(184, 240, 0, 0.42);
+  background: rgba(184, 240, 0, 0.12);
+  color: #b8f000;
+}
+
+.importer-tab-count {
+  min-width: 28px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(10, 6, 16, 0.46);
+  color: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  text-align: center;
+}
+
+.importer-empty {
+  padding: 16px 18px;
+  border-radius: 14px;
+  border: 1px dashed rgba(255, 255, 255, 0.16);
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--text-muted);
+}
+
 .import-grid {
   display: grid;
   gap: 16px;
@@ -1135,6 +1189,11 @@
 
 .import-card.unmatched {
   border-color: rgba(255, 159, 181, 0.45);
+}
+
+.import-card.skipped-graded {
+  border-color: rgba(255, 196, 92, 0.42);
+  background: rgba(26, 14, 8, 0.82);
 }
 
 .import-card-media {
@@ -1205,6 +1264,12 @@
   background: rgba(255, 159, 181, 0.18);
   color: #ff9fb5;
   border: 1px solid rgba(255, 159, 181, 0.35);
+}
+
+.pill.skip {
+  background: rgba(255, 196, 92, 0.16);
+  color: #ffc45c;
+  border: 1px solid rgba(255, 196, 92, 0.35);
 }
 
 .modal-backdrop {
